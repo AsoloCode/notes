@@ -1,0 +1,5 @@
+# macOS
+.DS_Store
+
+# Obsidian: личные настройки воркспейса
+.obsidian/
