@@ -15,7 +15,6 @@ created: 2026-09-24
 | 5 | observability — practice | [[05 - observability — practice/notes\|конспект]] | 30м | ✅ |
 | 6 | consensus | [[06 - consensus/notes\|конспект]] | 31м | ✅ |
 | 7 | sharding | [[07 - sharding/notes\|конспект]] | 26м | ✅ |
-| 8 | other | [[08 - other/notes\|конспект]] | — | ❌ |
 | 8 | Как пройти system design интервью (от Andrii Bui) — sys-des-checklist | [[08 - Как пройти system design интервью (от Andrii Bui) — sys-des-checklist/notes\|конспект]] | 8м | ✅ |
 | 8 | Как пройти system design интервью (от Andrii Bui) — os-updater | [[08 - Как пройти system design интервью (от Andrii Bui) — os-updater/notes\|конспект]] | 45м | ✅ |
 | 8 | Как пройти system design интервью (от Andrii Bui) — third_video | [[08 - Как пройти system design интервью (от Andrii Bui) — third_video/notes\|конспект]] | 57м | ✅ |

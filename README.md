@@ -9,7 +9,7 @@
 | Курс | Оглавление | Тем |
 |---|---|---|
 | Глубокий GO | [glubokiy-go/index.md](glubokiy-go/index.md) | 15 |
-| [SSL.BAND] [Влад Тен] Систем Дизайн (2025) | [SSL.BAND Систем Дизайн/index.md](SSL.BAND%20Систем%20Дизайн/index.md) | 18 |
+| [SSL.BAND] [Влад Тен] Систем Дизайн (2025) | [SSL.BAND Систем Дизайн/index.md](SSL.BAND%20Систем%20Дизайн/index.md) | 17 |
 | [SuperSliv.biz] System Design [Balun.Courses] | [SuperSliv System Design/index.md](SuperSliv%20System%20Design/index.md) | 8 |
 | System Design (merged) | [notes.md](System%20Design%20%28merged%29/notes.md) | 1 |
 
