@@ -28,7 +28,7 @@
 
 Каталог **`System Design Interview Simulator/`** — тренажёр собеседований по системному дизайну:
 10 сценариев с брифом кандидата, вопросами интервьюера, эталонными решениями (скрыты до попытки)
-и рубрикой оценки из 6 измерений. Запуск: `python3 "System Design Interview Simulator/tools/session.py" list`.
+и рубрикой оценки из 6 измерений. Запуск: `cd "System Design Interview Simulator" && go build -o bin/sdsim ./cmd/sdsim && ./bin/sdsim list`.
 
 ## Как читать
 

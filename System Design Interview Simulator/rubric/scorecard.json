@@ -1,5 +1,5 @@
 {
-  "$comment": "Шаблон оценочного листа. Оценки проставляются по шкале 0..4 (см. rubric/rubric.yaml). tools/session.py score принимает --scores в порядке dimensions[].id.",
+  "$comment": "Шаблон оценочного листа. Оценки проставляются по шкале 0..4 (см. rubric/rubric.yaml). Команда sdsim score принимает --scores в порядке dimensions[].id.",
   "version": "1.0",
   "scale": { "min": 0, "max": 4 },
   "dimensions": [

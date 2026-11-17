@@ -1,5 +1,5 @@
 # Машиночитаемый банк сценариев симулятора.
-# Источник истины для tools/session.py и tools/validate.py.
+# Источник истины для CLI sdsim (cmd/sdsim).
 schema: scenarios/1.0
 rubric: "../rubric/rubric.yaml"
 

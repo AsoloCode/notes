@@ -16,6 +16,8 @@ tags:
 [[SSL.BAND Систем Дизайн/index|SSL.BAND Систем Дизайн]] и
 [[SuperSliv System Design/index|SuperSliv System Design]].
 
+Инструменты (раннер и валидатор) написаны на **Go** (только stdlib).
+
 ## Зачем это
 
 Интервью по system design проверяет не «знание правильной архитектуры», а **процесс**:
@@ -33,26 +35,38 @@ tags:
 
 ## Быстрый старт
 
+Все команды выполняются из каталога `System Design Interview Simulator/`.
+
 ```bash
-# 1. Посмотреть список сценариев
-python3 "System Design Interview Simulator/tools/session.py" list
+cd "System Design Interview Simulator"
+
+# сборка CLI (один раз)
+go build -o bin/sdsim ./cmd/sdsim
+# либо запуск без сборки: go run ./cmd/sdsim <команда>
+
+# 1. Список сценариев
+./bin/sdsim list
 
 # 2. Начать попытку (покажет только бриф и вопросы — без решения)
-python3 "System Design Interview Simulator/tools/session.py" start url-shortener
+./bin/sdsim start url-shortener
 
 # 3. Зафиксировать попытку (сохранится черновик ответа)
-python3 "System Design Interview Simulator/tools/session.py" submit url-shortener \
-  --file my-answer.md
+./bin/sdsim submit url-shortener --file my-answer.md
 
 # 4. Открыть эталон и рубрику ТОЛЬКО после попытки
-python3 "System Design Interview Simulator/tools/session.py" reveal url-shortener
+./bin/sdsim reveal url-shortener
 
 # 5. Оценить себя и получить балл
-python3 "System Design Interview Simulator/tools/session.py" score url-shortener \
-  --scores 3,4,2,3,3,3
+./bin/sdsim score url-shortener --scores 3,4,2,3,3,3
+
+# 6. Валидация банка сценариев
+./bin/sdsim validate
+
+# тесты модуля
+go test ./...
 ```
 
-Без Python всё то же самое делается вручную: откройте карточку из `scenarios/`,
+Без Go всё то же самое делается вручную: откройте карточку из `scenarios/`,
 отвечайте письменно, затем сверьтесь с `solutions/` и посчитайте балл по `rubric/rubric.yaml`.
 
 ## Структура
@@ -61,6 +75,13 @@ python3 "System Design Interview Simulator/tools/session.py" score url-shortener
 System Design Interview Simulator/
   README.md                 # этот файл
   SIMULATOR.md              # протокол сессии: фазы, тайминг, поведение интервьюера
+  go.mod                    # Go-модуль (stdlib-only)
+  cmd/sdsim/main.go         # точка входа CLI
+  internal/
+    bank/                   # загрузка data/scenarios.json
+    rubric/                 # оценочный лист и расчёт балла (+ тесты)
+    validate/               # структурная валидация банка (+ тесты)
+    session/                # реализация команд CLI
   scenarios/                # 10 карточек кандидата (БЕЗ эталона)
     01-carsharing-booking.md
     ...
@@ -74,16 +95,13 @@ System Design Interview Simulator/
     levels.yaml             # ожидания по грейдам (Junior/Mid/Senior/Staff)
     scorecard.json          # шаблон оценочного листа (машиночитаемый)
   data/
-    scenarios.yaml          # банк сценариев (машиночитаемый)
-    scenarios.json          # то же в JSON
+    scenarios.yaml          # банк сценариев (машиночитаемый, human-friendly)
+    scenarios.json          # то же в JSON (источник для CLI)
     estimation-baselines.yaml # числа и латентности, которые стоит помнить
   schemas/
     scenario.schema.json    # JSON Schema для scenarios.json
     rubric.schema.json      # JSON Schema для scorecard.json
   attempts/                 # ваши попытки (черновики ответов, .gitkeep)
-  tools/
-    session.py              # CLI-раннер сессии
-    validate.py             # валидация YAML/JSON по схемам
 ```
 
 ## Сценарии
