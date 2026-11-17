@@ -1,0 +1,114 @@
+{
+  "directions": [
+    {
+      "id": "go",
+      "title": "Go",
+      "goal": "Свободно объяснять модель памяти, планировщик, конкурентность и идиомы Go; уверенно проходить собеседование уровня middle/senior.",
+      "topics": [
+        {"id": "types", "title": "Основные типы данных", "material": "glubokiy-go/01 - основные типы данных/notes.md", "key_points": ["int vs int64 и размер слова", "zero value и nil", "переполнение и преобразования типов", "string — неизменяемый байтовый срез"]},
+        {"id": "slices", "title": "Массивы и срезы", "material": "glubokiy-go/02 - массивы и срезы/notes.md", "key_points": ["array vs slice, len/cap", "внутреннее устройство slice header", "append и аллокации", "alias и утечки памяти через subslice"]},
+        {"id": "strings", "title": "Строки и руны", "material": "glubokiy-go/03 - строки/notes.md", "key_points": ["string — UTF-8 байты", "rune vs byte", "strings.Builder vs concat", "иммутабельность и интернирование"]},
+        {"id": "maps", "title": "Словари (map)", "material": "glubokiy-go/04 - словари/notes.md", "key_points": ["устройство hashmap, buckets", "эвакуация и рост", "порядок обхода не детерминирован", "map не потокобезопасна"]},
+        {"id": "functions", "title": "Функции и замыкания", "material": "glubokiy-go/05 - функции/notes.md", "key_points": ["замыкания и захват переменных", "defer: порядок и аргументы", "escape analysis", "variadic и интерфейсы"]},
+        {"id": "structs", "title": "Структуры данных", "material": "glubokiy-go/06 - структуры данных/notes.md", "key_points": ["embedding vs наследование", "выравнивание и padding", "методы с value/pointer receiver", "tags и сериализация"]},
+        {"id": "interfaces", "title": "Интерфейсы", "material": "glubokiy-go/07 - интерфейсы/notes.md", "key_points": ["structural typing", "iface и eface, itab", "nil interface vs nil value", "typeswitch и type assertion"]},
+        {"id": "errors", "title": "Обработка ошибок", "material": "glubokiy-go/08 - обработка ошибок/notes.md", "key_points": ["errors.Is/As, wrapping %w", "sentinel vs typed errors", "panic/recover — когда уместно", "не терять контекст"]},
+        {"id": "generics", "title": "Дженерики и рефлексия", "material": "glubokiy-go/09 - дженерики и рефлексия/notes.md", "key_points": ["type parameters и constraints", "статическая диспетчеризация (gcshape/stenciling)", "reflect: цена и риски", "когда дженерики не нужны"]},
+        {"id": "allocator", "title": "Аллокатор памяти", "material": "glubokiy-go/10 - аллокатор/notes.md", "key_points": ["mcache/mcentral/mheap", "size classes и span", "TCMalloc-происхождение", "почему важна локальность"]},
+        {"id": "gc", "title": "Сборщик мусора", "material": "glubokiy-go/11 - сборщик мусора/notes.md", "key_points": ["mark-and-sweep, трёхцветный алгоритм", "write barrier", "GOGC и GOMEMLIMIT", "stop-the-world и latency"]},
+        {"id": "scheduler", "title": "Планировщик и горутины", "material": "glubokiy-go/12 - планировщик и горутины/notes.md", "key_points": ["G-M-P модель, work stealing", "асинхронный преемпшн и sysmon", "горутина vs поток", "горутинные утечки"]},
+        {"id": "sync", "title": "Примитивы синхронизации", "material": "glubokiy-go/13 - примитивы синхронизации/notes.md", "key_points": ["Mutex/RWMutex", "WaitGroup, Once, atomic", "memory model и happens-before", "false sharing"]},
+        {"id": "channels", "title": "Каналы", "material": "glubokiy-go/14 - каналы/notes.md", "key_points": ["буферизация, закрытие", "select и default", "nil-канал блокирует", "patterns: fan-in/out, pipeline"]},
+        {"id": "context", "title": "Контексты", "material": "glubokiy-go/15 - контексты/notes.md", "key_points": ["отмена и дедлайны", "дерево контекстов и утечки", "WithValue — когда нельзя", "context в API"]},
+        {"id": "testing", "title": "Тестирование и бенчмарки", "key_points": ["table-driven tests", "testing.T.Cleanup/Parallel", "benchstat и -benchmem", "флаки и -race"]},
+        {"id": "profiling", "title": "Профайлинг и pprof", "key_points": ["cpu/mem/block/mutex профили", "pprof и flamegraph", "trace", "как находить hot path"]}
+      ]
+    },
+    {
+      "id": "postgresql",
+      "title": "PostgreSQL",
+      "goal": "Понимать устройство Postgres, уметь читать планы, настраивать производительность и объяснять MVCC/WAL на собеседовании.",
+      "topics": [
+        {"id": "mvcc", "title": "MVCC и изоляция", "material": "postgres-dev1/04 - DEV1-16. 03. Изоляция и многоверсионность", "key_points": ["xmin/xmax, снимки", "уровни изоляции и аномалии", "SI vs SSI", "видимость и vacuum"]},
+        {"id": "wal", "title": "WAL и буферный кеш", "material": "postgres-dev1/05 - DEV1-16. 04.  Буферный кеш и журнал", "key_points": ["WAL, LSN, checkpoint", "shared_buffers и clock-sweep", "fsync, full_page_writes", "групповой commit"]},
+        {"id": "logical", "title": "Логическая структура", "material": "postgres-dev1/06 - DEV1-16. 05.  Логическая структура", "key_points": ["кластер/база/схема/таблица", "системный каталог pg_catalog", "OID", "tablespace"]},
+        {"id": "physical", "title": "Физическая структура", "material": "postgres-dev1/07 - DEV1-16. 06.  Физическая структура", "key_points": ["страницы 8КБ, heap tuples", "TOAST", "FILLFACTOR, HOT-обновления", "free space map"]},
+        {"id": "planning", "title": "Планирование и выполнение", "material": "postgres-qpt/03 - QPT-16. 02. Планирование и выполнение", "key_points": ["parser → rewrite → planner → executor", "стоимостная модель", "EXPLAIN (ANALYZE, BUFFERS)", "оценки vs факт"]},
+        {"id": "access", "title": "Методы доступа", "material": "postgres-qpt/04 - QPT-16. 03. Методы доступа", "key_points": ["Seq Scan", "Index Scan / Index Only Scan", "Bitmap Heap Scan", "cost и selectivity"]},
+        {"id": "indexes", "title": "Типы индексов", "material": "postgres-qpt/06 - QPT-16. 05. Типы Индексов", "key_points": ["B-tree", "hash", "GIN/GiST для составных и полнотекста", "частичные и covering индексы"]},
+        {"id": "sort", "title": "Сортировка и группировка", "material": "postgres-qpt/07 - QPT-16. 06. Сортировка", "key_points": ["Sort vs Index", "work_mem и внешняя сортировка", "HashAggregate vs GroupAggregate", "GROUP BY и HAVING"]},
+        {"id": "joins", "title": "Соединения (joins)", "material": "postgres-qpt/09 - QPT-16. 08. Соединение вложенным циклом", "key_points": ["Nested Loop", "Hash Join", "Merge Join", "выбор метода по оценкам"]},
+        {"id": "stats", "title": "Статистика и селективность", "material": "postgres-qpt/12 - QPT-16. 11. Базовая статистика", "key_points": ["ANALYZE, pg_statistic", "гистограммы, MCV", "extended statistics", "почему оценки врут"]},
+        {"id": "profiling", "title": "Профилирование", "material": "postgres-qpt/14 - QPT-16. 13. Профилирование", "key_points": ["pg_stat_statements", "auto_explain", "log_min_duration_statement", "pg_stat_user_tables"]},
+        {"id": "materialize", "title": "Материализация", "material": "postgres-qpt/15 - QPT-16. 14. Материлизация", "key_points": ["CTE MATERIALIZED", "materialized views", "REFRESH", "когда кешировать результат"]},
+        {"id": "functions", "title": "Функции, процедуры, PL/pgSQL", "material": "postgres-dev1/09 - DEV1-16. 08. Функции", "key_points": ["VOLATILE/STABLE/IMMUTABLE", "SQL vs PL/pgSQL vs C", "процедуры и CALL", "стоимость и inlining"]},
+        {"id": "triggers", "title": "Триггеры и правила", "material": "postgres-dev1/18 - DEV1-16. 17. Триггеры", "key_points": ["BEFORE/AFTER/INSTEAD OF", "row vs statement", "transition tables", "риски и производительность"]},
+        {"id": "plpgsql", "title": "Курсоры, динамический SQL, ошибки", "material": "postgres-dev1/14 - DEV1-16. 13. Курсоры", "key_points": ["курсоры и FETCH", "EXECUTE USING", "EXCEPTION и ошибки", "SQLSTATE"]},
+        {"id": "types", "title": "Составные типы и массивы", "material": "postgres-dev1/16 - DEV1-16. 15. Массивы", "key_points": ["array и ANY", "composite типы", "jsonb vs json", "range-типы"]},
+        {"id": "locking", "title": "Транзакции и блокировки", "key_points": ["pg_locks, deadlock", "FOR UPDATE/SHARE", "advisory locks", "SELECT ... SKIP LOCKED"]},
+        {"id": "vacuum", "title": "VACUUM, autovacuum и bloat", "key_points": ["dead tuples и bloat", "autovacuum настройки", "VACUUM FULL vs REINDEX", "visibility map и index-only scan"]},
+        {"id": "backup", "title": "Резервное копирование и репликация", "material": "postgres-dev1/21 - DEV1-16. 20.  Резервное копирование. Логическое резервирование", "key_points": ["pg_dump/pg_restore", "PITR и archive_mode", "physical vs logical replication", "репликация слотов"]},
+        {"id": "tuning", "title": "Настройка параметров", "material": "postgres-qpt/17 - QPT-16. 16. Подходы к настройке", "key_points": ["shared_buffers, work_mem", "effective_cache_size", "random_page_cost", "connection pooling"]}
+      ]
+    },
+    {
+      "id": "algorithms",
+      "title": "Алгоритмы и структуры данных",
+      "goal": "Решать задачи на интервью: выбирать структуру, оценивать сложность, объяснять компромиссы и edge cases.",
+      "topics": [
+        {"id": "complexity", "title": "Асимптотика и анализ", "key_points": ["O/Θ/Ω", "амортизированная сложность", "пространство и рекурсия", "master theorem (базово)"]},
+        {"id": "arrays", "title": "Массивы и строки", "key_points": ["two pointers", "sliding window", "prefix sums", "in-place операции"]},
+        {"id": "lists", "title": "Связные списки", "key_points": ["разворот, цикл (Floyd)", "fast/slow pointers", "merge двух списков", "dummy head приём"]},
+        {"id": "stackqueue", "title": "Стек, очередь, deque", "key_points": ["монотонный стек", "очередь на двух стеках", "выражения и скобки", "LRU на map+list"]},
+        {"id": "hashing", "title": "Хеш-таблицы", "key_points": ["коллизии, load factor", "частотные задачи", "two-sum и дополнение", "хеш vs сортировка"]},
+        {"id": "trees", "title": "Деревья и BST", "key_points": ["обходы (in/pre/post/level)", "BST-инвариант", "низший общий предок", "балансировка (AVL/красно-чёрное)"]},
+        {"id": "heap", "title": "Куча и приоритетная очередь", "key_points": ["heapify и операции", "top-K", "merge K списков", "две кучи (медиана)"]},
+        {"id": "graphs", "title": "Графы: BFS/DFS", "key_points": ["представление (список/матрица)", "компоненты связности", "топологическая сортировка", "циклы и двудольность"]},
+        {"id": "shortest", "title": "Кратчайшие пути", "key_points": ["BFS (невзвешенный)", "Дейкстра + куча", "Bellman-Ford", "0-1 BFS"]},
+        {"id": "sorting", "title": "Сортировки", "key_points": ["quick/merge/heap", "стабильность", "сравнение vs подсчёт", "частные случаи и границы"]},
+        {"id": "binsearch", "title": "Бинарный поиск", "key_points": ["шаблон lo/hi без off-by-one", "по ответу (binary search on answer)", "rotated array", "границы и монотонность"]},
+        {"id": "dp", "title": "Динамическое программирование", "key_points": ["state/переход/base case", "мемоизация vs табуляция", "knapsack, LIS, edit distance", "оптимизация по памяти"]},
+        {"id": "greedy", "title": "Жадные алгоритмы", "key_points": ["критерий обмена", "интервалы и покрытие", "доказательство корректности", "когда жадность ломается"]},
+        {"id": "backtracking", "title": "Рекурсия и бэктрекинг", "key_points": ["permutations/subsets", "pruning", "N-Queens", "дерево решений"]}
+      ]
+    },
+    {
+      "id": "system-design",
+      "title": "System Design",
+      "goal": "Проектировать системы под нагрузку: собирать требования, оценивать масштаб, выбирать хранилища и объяснять компромиссы.",
+      "topics": [
+        {"id": "requirements", "title": "Требования и оценки (capacity)", "key_points": ["functional/non-functional", "QPS, latency, storage", "back-of-envelope", "SLA/SLO"]},
+        {"id": "api", "title": "API и контракты", "key_points": ["REST vs gRPC vs GraphQL", "идемпотентность методов", "пагинация и курсоры", "версионирование"]},
+        {"id": "storage", "title": "Выбор хранилища", "key_points": ["OLTP vs OLAP", "SQL vs NoSQL", "LSM vs B-tree", "полиглот-персистентность"]},
+        {"id": "caching", "title": "Кэширование", "key_points": ["cache-aside/write-through", "инвалидация и TTL", "cache stampede", "локальный vs распределённый кэш"]},
+        {"id": "scaling", "title": "Масштабирование", "key_points": ["вертикальное/горизонтальное", "балансировка и health-check", "шардирование и ключ шарда", "репликация read/write"]},
+        {"id": "cap", "title": "CAP и консистентность", "key_points": ["CAP vs PACELC", "strong/eventual consistency", "кворумы", "конфликты и их разрешение"]},
+        {"id": "queues", "title": "Очереди и асинхронность", "key_points": ["Kafka vs RabbitMQ", "at-least/exactly-once", "backpressure", "DLQ и ретраи"]},
+        {"id": "reliability", "title": "Надёжность и отказоустойчивость", "key_points": ["single point of failure", "failover", "circuit breaker", "graceful degradation"]},
+        {"id": "observability", "title": "Наблюдаемость", "key_points": ["metrics/logs/traces", "SLI и алерты", "RED/USE метрики", "распределённый трейсинг"]},
+        {"id": "ratelimit", "title": "Rate limiting и защита", "key_points": ["token bucket, leaky bucket", "распределённый лимитер", "throttling vs rate limit", "защита от абьюза"]},
+        {"id": "urlshortener", "title": "Кейс: URL shortener", "key_points": ["генерация ключей", "редирект и кэш", "аналитика", "масштаб по чтению"]},
+        {"id": "feed", "title": "Кейс: лента/новостной фид", "key_points": ["fan-out on write vs read", "гибридный подход", "горячие пользователи (hotspot)", "ранжирование"]},
+        {"id": "chat", "title": "Кейс: чат/мессенджер", "key_points": ["WebSocket/SSE", "хранение сообщений", "доставка и офлайн", "присутствие (presence)"]}
+      ]
+    },
+    {
+      "id": "microservices",
+      "title": "Микросервисы",
+      "goal": "Проектировать сервисные границы, обеспечивать консистентность, наблюдаемость и безопасность распределённой системы.",
+      "topics": [
+        {"id": "boundaries", "title": "Границы сервисов", "key_points": ["DDD и bounded context", "декомпозиция по бизнес-возможностям", "монолит vs микросервисы", "team topologies"]},
+        {"id": "contracts", "title": "Контракты и версионирование", "key_points": ["gRPC/protobuf, breaking changes", "schema registry", "consumer-driven contracts", "совместимость"]},
+        {"id": "sync-async", "title": "Sync vs Async взаимодействие", "key_points": ["REST/gRPC vs события", "оркестрация vs хореография", "связность и coupling", "API gateway"]},
+        {"id": "saga", "title": "Саги и распределённые транзакции", "key_points": ["saga: choreography/orchestration", "компенсации", "идемпотентность шагов", "почему 2PC плохо"]},
+        {"id": "idempotency", "title": "Идемпотентность и ретраи", "key_points": ["idempotency key", "retry с backoff+jitter", "дедуп на приёмнике", "timeouts и бюджеты"]},
+        {"id": "outbox", "title": "Outbox и доставка событий", "key_points": ["transactional outbox", "CDC (Debezium)", "exactly-once на практике", "ordering"]},
+        {"id": "observability", "title": "Наблюдаемость в распределённом", "key_points": ["OpenTelemetry", "correlation/trace id", "RED метрики", "SLI/SLO и алерты"]},
+        {"id": "resilience", "title": "Resilience-паттерны", "key_points": ["circuit breaker", "bulkhead", "timeout budget", "backpressure и load shedding"]},
+        {"id": "deploy", "title": "Деплой и конфигурация", "key_points": ["blue-green, canary", "feature flags", "конфиг и секреты", "graceful shutdown"]},
+        {"id": "security", "title": "Безопасность", "key_points": ["authN vs authZ", "OAuth2/OIDC, JWT", "mTLS service-to-service", "least privilege"]},
+        {"id": "testing", "title": "Тестирование сервисов", "key_points": ["contract tests", "testcontainers", "e2e и пирамида", "тестирование отказов"]}
+      ]
+    }
+  ]
+}
