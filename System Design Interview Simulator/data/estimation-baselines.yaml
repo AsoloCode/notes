@@ -1,0 +1,82 @@
+# Опорные числа для back-of-envelope оценки. Ориентиры, не догма —
+# кандидат обязан помечать их как предположения.
+schema: estimation-baselines/1.0
+
+latency:
+  l1_cache: "~1 нс"
+  branch_mispredict: "~5 нс"
+  l2_cache: "~10 нс"
+  main_memory: "~100 нс"
+  ssd_random_read: "~100 мкс"
+  hdd_seek: "~10 мс"
+  same_dc_rtt: "~0.5 мс"
+  cross_region_rtt: "~50–150 мс"
+  internet_rtt: "~50–200 мс"
+
+throughput_rules_of_thumb:
+  single_db_node_writes: "~5–20k/с"
+  single_db_node_reads: "~10–50k/с"
+  redis_node_ops: "~100k/с"
+  kafka_partition: "~10–100k сообщений/с"
+  single_app_node_rps: "~1–10k/с (зависит от логики)"
+  block_storage_throughput: "~гигабиты/с на узел"
+
+sizes:
+  char: "1 Б"
+  int64: "8 Б"
+  uuid: "16 Б"
+  http_header_avg: "~500 Б"
+  small_row: "~100–500 Б"
+  photo: "~1–5 МБ"
+  video_minute: "~10–50 МБ"
+
+time:
+  seconds_per_day: 86400
+  seconds_per_month: "~2.6M"
+  seconds_per_year: "~31.5M"
+  days_per_year: 365
+
+scaling_math:
+  qps_from_dau: "QPS_avg = DAU * actions_per_user_per_day / 86400"
+  peak_multiplier: "peak ≈ avg * 2..10 (зависит от профиля нагрузки)"
+  storage: "storage = records_per_day * size_per_record * days"
+  nines:
+    99: "8.76 ч downtime/год"
+    99.9: "8.76 ч/год ≈ 43 мин/мес"
+    99.99: "52 мин/год"
+    99.999: "5.26 мин/год"
+
+storage_types_cheatsheet:
+  - type: KV
+    use_for: "сессия, кэш, шортенер, фиче-флаги"
+    examples: ["Redis", "DynamoDB", "RocksDB"]
+  - type: OLTP RDBMS
+    use_for: "транзакции, деньги, инвентарь, заказы"
+    examples: ["PostgreSQL", "MySQL"]
+  - type: search
+    use_for: "полнотекстовый поиск, каталог"
+    examples: ["Elasticsearch", "OpenSearch"]
+  - type: time-series
+    use_for: "метрики, телеметрия, локации"
+    examples: ["ClickHouse", "TimescaleDB", "VictoriaMetrics"]
+  - type: OLAP/columnar
+    use_for: "аналитика, агрегаты"
+    examples: ["ClickHouse", "BigQuery"]
+  - type: blob/object
+    use_for: "файлы, медиа"
+    examples: ["S3", "GCS", "MinIO"]
+  - type: geo-index
+    use_for: "«кто рядом» в реальном времени"
+    examples: ["Redis GEO", "S2", "geohash", "PostGIS"]
+
+consistency_cheatsheet:
+  strong: "банки, инвентарь, брони, назначение водителя"
+  read_your_write: "профиль пользователя, опти-аут"
+  eventual: "ленты, счётчики, аналитика, presence, кэш"
+
+reliability_cheatsheet:
+  idempotency: "ключ идемпотентности + дедуп на приёмнике"
+  retries: "экспоненциальный backoff + jitter; ретраить только идемпотентное"
+  backpressure: "ограничение очереди, dropping по приоритету, load shedding"
+  degradation: "сначала отключаем некритичное (аналитика, маркетинг), затем — второстепенные фичи"
+  observability: "метрики (RED/USE), трейсинг, алерты на SLO, dashboards"

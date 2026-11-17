@@ -1,0 +1,58 @@
+{
+  "$comment": "Шаблон оценочного листа. Оценки проставляются по шкале 0..4 (см. rubric/rubric.yaml). tools/session.py score принимает --scores в порядке dimensions[].id.",
+  "version": "1.0",
+  "scale": { "min": 0, "max": 4 },
+  "dimensions": [
+    { "id": "requirements", "title": "Требования и скоуп", "weight": 20 },
+    { "id": "architecture", "title": "High-level архитектура", "weight": 20 },
+    { "id": "data_model", "title": "Модель данных и хранилище", "weight": 15 },
+    { "id": "deep_dive", "title": "Deep dive и trade-offs", "weight": 20 },
+    { "id": "reliability", "title": "Надёжность и эксплуатация", "weight": 10 },
+    { "id": "communication", "title": "Коммуникация и ведение", "weight": 15 }
+  ],
+  "grades": [
+    { "grade": "staff", "min_total": 85 },
+    { "grade": "senior", "min_total": 70 },
+    { "grade": "mid", "min_total": 55 },
+    { "grade": "junior", "min_total": 35 },
+    { "grade": "not_ready", "min_total": 0 }
+  ],
+  "template": {
+    "scenario_slug": "<scenario-slug>",
+    "candidate": "<name>",
+    "date": "YYYY-MM-DD",
+    "duration_min": 0,
+    "scores": {
+      "requirements": null,
+      "architecture": null,
+      "data_model": null,
+      "deep_dive": null,
+      "reliability": null,
+      "communication": null
+    },
+    "red_flags": [],
+    "strong_signals": [],
+    "total": null,
+    "grade": null,
+    "notes": ""
+  },
+  "example": {
+    "scenario_slug": "url-shortener",
+    "candidate": "candidate",
+    "date": "2026-11-17",
+    "duration_min": 48,
+    "scores": {
+      "requirements": 3,
+      "architecture": 3,
+      "data_model": 3,
+      "deep_dive": 2,
+      "reliability": 3,
+      "communication": 3
+    },
+    "red_flags": ["Не назвал оценку объёма аналитики"],
+    "strong_signals": ["Корректная оценка QPS", "Hot key на популярных ссылках"],
+    "total": 70.0,
+    "grade": "senior",
+    "notes": "Сильный baseline, стоит усилить deep dive по аналитике."
+  }
+}

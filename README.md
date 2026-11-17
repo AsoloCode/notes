@@ -12,6 +12,7 @@
 | [SSL.BAND] [Влад Тен] Систем Дизайн (2025) | [SSL.BAND Систем Дизайн/index.md](SSL.BAND%20Систем%20Дизайн/index.md) | 17 |
 | [SuperSliv.biz] System Design [Balun.Courses] | [SuperSliv System Design/index.md](SuperSliv%20System%20Design/index.md) | 8 |
 | System Design (merged) | [notes.md](System%20Design%20%28merged%29/notes.md) | 1 |
+| 🎯 System Design Interview Simulator | [README.md](System%20Design%20Interview%20Simulator/README.md) | 10 |
 
 ## Структура
 
@@ -22,6 +23,12 @@
     notes.md            # конспект лекции
     frames/             # кадры/слайды из видео
 ```
+
+## Тренажёр интервью (🎯)
+
+Каталог **`System Design Interview Simulator/`** — тренажёр собеседований по системному дизайну:
+10 сценариев с брифом кандидата, вопросами интервьюера, эталонными решениями (скрыты до попытки)
+и рубрикой оценки из 6 измерений. Запуск: `python3 "System Design Interview Simulator/tools/session.py" list`.
 
 ## Как читать
 

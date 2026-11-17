@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://asolocode.github.io/notes/system-design-interview/schemas/rubric.schema.json",
+  "title": "Scorecard (rubric/scorecard.json)",
+  "type": "object",
+  "required": ["version", "scale", "dimensions", "grades", "template"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "string" },
+    "scale": {
+      "type": "object",
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": "integer" },
+        "max": { "type": "integer" }
+      }
+    },
+    "dimensions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "weight"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "weight": { "type": "integer", "minimum": 1, "maximum": 100 }
+        }
+      }
+    },
+    "grades": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["grade", "min_total"],
+        "properties": {
+          "grade": { "type": "string" },
+          "min_total": { "type": "number" }
+        }
+      }
+    },
+    "template": {
+      "type": "object",
+      "required": ["scenario_slug", "scores"],
+      "properties": {
+        "scenario_slug": { "type": "string" },
+        "candidate": { "type": "string" },
+        "date": { "type": "string" },
+        "duration_min": { "type": "number" },
+        "scores": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 4
+          }
+        },
+        "red_flags": { "type": "array", "items": { "type": "string" } },
+        "strong_signals": { "type": "array", "items": { "type": "string" } },
+        "total": { "type": ["number", "null"] },
+        "grade": { "type": ["string", "null"] },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

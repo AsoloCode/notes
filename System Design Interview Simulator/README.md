@@ -1,0 +1,131 @@
+---
+type: moc
+course: System Design Interview Simulator
+created: 2026-11-17
+tags:
+  - course/system-design
+  - interview/simulator
+---
+
+# System Design Interview Simulator
+
+Тренажёр интервью по системному дизайну: 10 сценариев, ролевая механика интервьюера,
+структурированная рубрика оценки. **Эталонное решение скрыто до вашей попытки.**
+
+Материал опирается на конспекты этого репозитория:
+[[SSL.BAND Систем Дизайн/index|SSL.BAND Систем Дизайн]] и
+[[SuperSliv System Design/index|SuperSliv System Design]].
+
+## Зачем это
+
+Интервью по system design проверяет не «знание правильной архитектуры», а **процесс**:
+умение сузить задачу, посчитать нагрузку, выбрать компромиссы, объяснить отказоустойчивость
+и удержать разговор под follow-up вопросами. Поэтому тренажёр воспроизводит не ответ,
+а **последовательность фаз** реального интервью и оценивает именно её.
+
+Три принципа:
+
+1. **Сначала попытка — потом эталон.** Пока вы не зафиксировали свой вариант,
+   эталонное решение недоступно (файлы в `solutions/` отделены от карточек в `scenarios/`).
+2. **Оценка по сигналам, а не «правильности».** В рубрике важны формулировки
+   «зачёт / флаг», а не единственно верная диаграмма.
+3. **Явные предположения.** Любое число помечается как предположение с обоснованием.
+
+## Быстрый старт
+
+```bash
+# 1. Посмотреть список сценариев
+python3 "System Design Interview Simulator/tools/session.py" list
+
+# 2. Начать попытку (покажет только бриф и вопросы — без решения)
+python3 "System Design Interview Simulator/tools/session.py" start url-shortener
+
+# 3. Зафиксировать попытку (сохранится черновик ответа)
+python3 "System Design Interview Simulator/tools/session.py" submit url-shortener \
+  --file my-answer.md
+
+# 4. Открыть эталон и рубрику ТОЛЬКО после попытки
+python3 "System Design Interview Simulator/tools/session.py" reveal url-shortener
+
+# 5. Оценить себя и получить балл
+python3 "System Design Interview Simulator/tools/session.py" score url-shortener \
+  --scores 3,4,2,3,3,3
+```
+
+Без Python всё то же самое делается вручную: откройте карточку из `scenarios/`,
+отвечайте письменно, затем сверьтесь с `solutions/` и посчитайте балл по `rubric/rubric.yaml`.
+
+## Структура
+
+```
+System Design Interview Simulator/
+  README.md                 # этот файл
+  SIMULATOR.md              # протокол сессии: фазы, тайминг, поведение интервьюера
+  scenarios/                # 10 карточек кандидата (БЕЗ эталона)
+    01-carsharing-booking.md
+    ...
+    10-feature-flag-platform.md
+  solutions/                # 10 эталонных решений (открывать только после попытки)
+    01-carsharing-booking.md
+    ...
+    10-feature-flag-platform.md
+  rubric/
+    rubric.yaml             # 6 измерений, веса, level-anchors, red flags, strong signals
+    levels.yaml             # ожидания по грейдам (Junior/Mid/Senior/Staff)
+    scorecard.json          # шаблон оценочного листа (машиночитаемый)
+  data/
+    scenarios.yaml          # банк сценариев (машиночитаемый)
+    scenarios.json          # то же в JSON
+    estimation-baselines.yaml # числа и латентности, которые стоит помнить
+  schemas/
+    scenario.schema.json    # JSON Schema для scenarios.json
+    rubric.schema.json      # JSON Schema для scorecard.json
+  attempts/                 # ваши попытки (черновики ответов, .gitkeep)
+  tools/
+    session.py              # CLI-раннер сессии
+    validate.py             # валидация YAML/JSON по схемам
+```
+
+## Сценарии
+
+| # | Slug | Сценарий | Тип | Фокус |
+|---|---|---|---|---|
+| 1 | `carsharing-booking` | Бронирование каршеринга | Write-heavy, strong consistency | Инвентарь, гонки за машину |
+| 2 | `url-shortener` | Сокращатель ссылок | Read-heavy, KV | Генерация ключей, кэш, аналитика |
+| 3 | `notification-service` | Сервис уведомлений | Fan-out, очереди | Multi-channel, дедуп, деградация |
+| 4 | `chat` | Мессенджер | Realtime, ordering | Сокеты, порядок, celebrity problem |
+| 5 | `payment-service` | Платёжный сервис | Money, exactly-once | Идемпотентность, саги, аудит |
+| 6 | `food-delivery` | Доставка еды | Geo, state machine | Курьер↔заказ, статусы, ETA |
+| 7 | `ride-sharing` | Такси/райдшеринг | Geo, matching | Геоиндекс, матчинг, surge |
+| 8 | `file-storage` | Файловое хранилище | Blob, dedup | Чанки, метаданные, шеринг |
+| 9 | `job-scheduler` | Планировщик задач | Coordinated timers | Cron/one-off, exactly-once, лидер |
+| 10 | `feature-flag-platform` | Платформа фиче-флагов | Read-heavy, low-latency | Правила, процентка, consistency |
+
+## Формат оценки — коротко
+
+Шесть измерений, у каждого вес и шкала 0–4 (см. `rubric/rubric.yaml`):
+
+| Измерение | Вес | Что проверяется |
+|---|---|---|
+| Требования и скоуп | 20% | Функциональные/нефункциональные, границы задачи |
+| High-level архитектура | 20% | Компоненты, поток данных, обоснованность |
+| Модель данных и хранилище | 15% | Схема, выбор БД, индексы, партиционирование |
+| Deep dive и trade-offs | 20% | Числа, узкие места, компромиссы, альтернативы |
+| Надёжность и эксплуатация | 10% | Отказы, деградация, наблюдаемость |
+| Коммуникация и ведение | 15% | Ведёт диалог, проговаривает допущения, держит темп |
+
+Итоговый балл = Σ(оценка ÷ 4 × вес). Пороги грейда — в `rubric/levels.yaml`.
+
+## Правила честной тренировки
+
+- **Не подглядывать** в `solutions/` и в блок эталонных подсказок до фиксации ответа.
+- **Проговаривать допущения** вслух и записывать их.
+- **Не молчать**: считаете, что интервьюер должен что-то подсказать — сформулируйте вопрос.
+- **Писать, а не думать.** Ответ в голове невозможно оценить; фиксируйте текст/диаграмму.
+- **Таймбокс** — 45–60 минут на сценарий (см. `SIMULATOR.md`).
+
+## Про источники
+
+Сценарии составлены по мотивам конспектов репозитория и публичных материалов по system design
+интервью. Эталонные решения — учебные «сильные ответы», не единственно верные: цель — рамка
+рассуждения, а не догма.

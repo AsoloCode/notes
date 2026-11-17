@@ -1,0 +1,651 @@
+{
+  "schema": "scenarios/1.0",
+  "rubric": "../rubric/rubric.yaml",
+  "scenarios": [
+    {
+      "slug": "carsharing-booking",
+      "order": 1,
+      "title": "Бронирование каршеринга",
+      "level": "mid-senior",
+      "focus": "инвентарь, гонки за машину, strong consistency",
+      "scenario_path": "scenarios/01-carsharing-booking.md",
+      "solution_path": "solutions/01-carsharing-booking.md",
+      "functional": [
+        "Поиск свободных машин в радиусе",
+        "Бронь (hold) с TTL и старт поездки",
+        "Завершение и расчёт стоимости",
+        "История поездок"
+      ],
+      "non_functional": [
+        "Strong consistency на брони (no double-book)",
+        "Поиск p95 < 300 мс; доступность ≥ 99.9%",
+        "Write-heavy телеметрия машин"
+      ],
+      "interviewer_questions": [
+        "Масштаб: пользователи, машины, города?",
+        "Что при сбое: принять бронь или отклонить?",
+        "TTL брони и поведение при нестарте?"
+      ],
+      "key_metrics": {
+        "users": "5M",
+        "cars": "100k",
+        "search_qps_peak": "~350",
+        "reservation_qps_peak": "~60",
+        "telemetry_writes_per_sec": "~10k"
+      },
+      "components": [
+        "API Gateway",
+        "Search (geo index)",
+        "Reservation service",
+        "Trip service",
+        "Kafka telemetry",
+        "Time-series store"
+      ],
+      "consistency": {
+        "reservation": "strong",
+        "search": "eventual",
+        "trip_state": "strong",
+        "telemetry": "eventual"
+      },
+      "bottlenecks": [
+        "Hot zones",
+        "Конкуренция за машину",
+        "Объём телеметрии"
+      ],
+      "trade_offs": [
+        "TTL-hold vs вечный лок",
+        "Серверная бронь vs оптимистичная",
+        "Точность гео vs стоимость"
+      ],
+      "red_flags": [
+        "check-then-write без атомарности (гонка)",
+        "игнор объёма телеметрии",
+        "нет TTL брони"
+      ],
+      "strong_signals": [
+        "CAS/условный апдейт статуса машины",
+        "Расчёт write-heavy телеметрии",
+        "Fail-closed деградация"
+      ]
+    },
+    {
+      "slug": "url-shortener",
+      "order": 2,
+      "title": "Сокращатель ссылок",
+      "level": "junior-mid",
+      "focus": "read-heavy, генерация ключей, кэш, аналитика",
+      "scenario_path": "scenarios/02-url-shortener.md",
+      "solution_path": "solutions/02-url-shortener.md",
+      "functional": [
+        "Создание короткой ссылки (опц. алиас)",
+        "Редирект по короткой ссылке",
+        "Статистика кликов",
+        "TTL и удаление"
+      ],
+      "non_functional": [
+        "Read-heavy (~1:100 create:read)",
+        "Редирект p99 < 50 мс, доступность ≥ 99.99%",
+        "Аналитика eventually consistent"
+      ],
+      "interviewer_questions": [
+        "Соотношение create:read?",
+        "301 или 302?",
+        "Ссылка обязана быть неугадываемой?"
+      ],
+      "key_metrics": {
+        "creates_per_day": "100M",
+        "redirects_per_day": "10B",
+        "redirect_qps_peak": "~500k",
+        "key_length": ">= 7 (base62)",
+        "storage_5y": "~90 ТБ"
+      },
+      "components": [
+        "CDN/edge",
+        "Create service",
+        "Key gen",
+        "KV store",
+        "Cache",
+        "Kafka",
+        "OLAP analytics"
+      ],
+      "consistency": {
+        "create_to_read": "strong",
+        "analytics": "eventual",
+        "cache": "eventual"
+      },
+      "bottlenecks": [
+        "Горячие (viral) ссылки",
+        "Коллизии ключей",
+        "500k QPS редиректов"
+      ],
+      "trade_offs": [
+        "301 vs 302",
+        "hash vs counter",
+        "read-through vs write-through cache"
+      ],
+      "red_flags": [
+        "нет оценки read-heavy",
+        "аналитика в OLTP-БД",
+        "предсказуемые последовательные ключи"
+      ],
+      "strong_signals": [
+        "Явная оценка QPS и длины ключа",
+        "Эдж-кэш/CDN на редиректе",
+        "Отделение аналитики от критичного пути"
+      ]
+    },
+    {
+      "slug": "notification-service",
+      "order": 3,
+      "title": "Сервис уведомлений",
+      "level": "mid-senior",
+      "focus": "fan-out, очереди, дедуп, деградация",
+      "scenario_path": "scenarios/03-notification-service.md",
+      "solution_path": "solutions/03-notification-service.md",
+      "functional": [
+        "Приём запросов (single/bulk)",
+        "Выбор канала по предпочтениям",
+        "Шаблоны, локализация, schedule",
+        "Ретраи, дедуп, opt-out"
+      ],
+      "non_functional": [
+        "Bursty-нагрузка (рассылка на миллионы)",
+        "At-least-once + дедупликация",
+        "Деградация по приоритету"
+      ],
+      "interviewer_questions": [
+        "Объём и пик уведомлений?",
+        "Сколько каналов?",
+        "Не потерять или не продублировать?"
+      ],
+      "key_metrics": {
+        "per_day": "500M",
+        "avg_per_sec": "~6k",
+        "burst_peak_per_sec": "~33k",
+        "status_storage_30d": "~3 ТБ"
+      },
+      "components": [
+        "API service",
+        "Requests DB",
+        "Priority queues",
+        "Channel workers",
+        "Providers",
+        "Webhook receiver"
+      ],
+      "consistency": {
+        "dedup": "strong",
+        "delivery": "at_least_once",
+        "opt_out": "read_your_write"
+      },
+      "bottlenecks": [
+        "Внешний провайдер (rate limit)",
+        "Fan-out в bulk",
+        "Горячий пользователь"
+      ],
+      "trade_offs": [
+        "at-least-once vs exactly-once",
+        "sync приём vs async",
+        "push vs poll статуса"
+      ],
+      "red_flags": [
+        "синхронная отправка без очереди",
+        "нет дедупа",
+        "нет деградации по приоритету"
+      ],
+      "strong_signals": [
+        "Приоритетные очереди и деградация",
+        "Дедуп-ключи",
+        "Rate limit и backpressure провайдеров"
+      ]
+    },
+    {
+      "slug": "chat",
+      "order": 4,
+      "title": "Мессенджер",
+      "level": "mid-senior",
+      "focus": "realtime, ordering, celebrity problem",
+      "scenario_path": "scenarios/04-chat.md",
+      "solution_path": "solutions/04-chat.md",
+      "functional": [
+        "Сообщения 1:1 и группы",
+        "История и подгрузка",
+        "Read receipts и presence",
+        "Доставка оффлайн"
+      ],
+      "non_functional": [
+        "Доставка в онлайне — сотни мс",
+        "Порядок сообщений внутри чата",
+        "Большие группы (celebrity)"
+      ],
+      "interviewer_questions": [
+        "Максимальный размер группы?",
+        "Гарантия доставки?",
+        "Полный порядок между устройствами?"
+      ],
+      "key_metrics": {
+        "messages_per_day": "20B",
+        "avg_per_sec": "~230k",
+        "peak_per_sec": "~600k",
+        "concurrent_connections": "100–200M"
+      },
+      "components": [
+        "WS Gateway",
+        "Chat service",
+        "Chat DB (shard by chat_id)",
+        "Pub/Sub",
+        "Presence",
+        "Offline push"
+      ],
+      "consistency": {
+        "message_order": "strong",
+        "read_receipts": "eventual",
+        "presence": "eventual"
+      },
+      "bottlenecks": [
+        "Celebrity-группы",
+        "Hot partition чата",
+        "Объём соединений"
+      ],
+      "trade_offs": [
+        "push vs poll",
+        "fan-out-on-write vs read",
+        "hot vs cold storage сообщений"
+      ],
+      "red_flags": [
+        "порядок по клиентскому времени",
+        "fan-out в огромные группы без стратегии",
+        "нет дедупа сообщений"
+      ],
+      "strong_signals": [
+        "Серверный sequence для порядка",
+        "Гибридная доставка (socket + догрузка)",
+        "Стратегия против celebrity problem"
+      ]
+    },
+    {
+      "slug": "payment-service",
+      "order": 5,
+      "title": "Платёжный сервис",
+      "level": "senior",
+      "focus": "идемпотентность, саги, аудит, exactly-once",
+      "scenario_path": "scenarios/05-payment-service.md",
+      "solution_path": "solutions/05-payment-service.md",
+      "functional": [
+        "Идемпотентное создание платежа",
+        "Проведение через PSP и колбэки",
+        "Возвраты",
+        "Ledger (двойная запись) и сверка"
+      ],
+      "non_functional": [
+        "Strong consistency для денег",
+        "Эффект exactly-once (идемпотентность)",
+        "Неизменяемый аудит; доступность ≥ 99.99%"
+      ],
+      "interviewer_questions": [
+        "TPS avg и пик?",
+        "Сколько PSP?",
+        "Таймаут PSP — failed или unknown?"
+      ],
+      "key_metrics": {
+        "tps_avg": "5k",
+        "tps_peak": "20k",
+        "per_day": "~430M",
+        "ledger_3y": "~250 ТБ"
+      },
+      "components": [
+        "Payment API",
+        "Payment saga",
+        "Ledger DB",
+        "Outbox",
+        "PSP adapter",
+        "Webhook receiver",
+        "Reconciliation"
+      ],
+      "consistency": {
+        "money": "strong",
+        "callbacks": "eventual_with_dedup",
+        "cross_service": "eventual_outbox"
+      },
+      "bottlenecks": [
+        "Внешний PSP",
+        "Горячий merchant",
+        "Сверка"
+      ],
+      "trade_offs": [
+        "sync vs async приём",
+        "exactly-once vs at-least-once + dedup",
+        "ledger: одна БД vs распределённый"
+      ],
+      "red_flags": [
+        "ретраи без идемпотентности",
+        "порядок колбэков как источник истины",
+        "нет сверки"
+      ],
+      "strong_signals": [
+        "Сага + компенсации",
+        "unknown вместо failed при таймауте",
+        "Двойная запись + outbox + reconciliation"
+      ]
+    },
+    {
+      "slug": "food-delivery",
+      "order": 6,
+      "title": "Доставка еды",
+      "level": "mid-senior",
+      "focus": "geo, стейт-машина заказа, assignment курьера, ETA",
+      "scenario_path": "scenarios/06-food-delivery.md",
+      "solution_path": "solutions/06-food-delivery.md",
+      "functional": [
+        "Каталог/меню с гео-поиском",
+        "Оформление заказа и оплата",
+        "Стейт-машина заказа",
+        "Назначение курьера, трекинг, ETA"
+      ],
+      "non_functional": [
+        "Пиковая нагрузка обед/ужин",
+        "Согласованные переходы статуса",
+        "Гео-запросы за десятки мс"
+      ],
+      "interviewer_questions": [
+        "Заказов/день и пик?",
+        "Частота апдейтов курьера?",
+        "ETA точный или быстрый?"
+      ],
+      "key_metrics": {
+        "orders_per_day": "2M",
+        "avg_qps": "~23",
+        "peak_qps": "~200",
+        "courier_updates_per_sec": "~20k"
+      },
+      "components": [
+        "Catalog/Geo",
+        "Order service (FSM)",
+        "Event bus",
+        "Courier matching",
+        "Location service",
+        "Tracking/ETA"
+      ],
+      "consistency": {
+        "order_status": "strong",
+        "courier_assignment": "strong",
+        "eta_tracking": "eventual",
+        "catalog": "eventual"
+      },
+      "bottlenecks": [
+        "Пик обед/ужин",
+        "Hot city zones",
+        "Гео-запросы к курьерам"
+      ],
+      "trade_offs": [
+        "push vs pull трекинг",
+        "sync vs event-driven статусы",
+        "точный ETA vs быстрый"
+      ],
+      "red_flags": [
+        "статусы без валидации перехода",
+        "два курьера на заказ",
+        "игнор пиков"
+      ],
+      "strong_signals": [
+        "FSM с conditional update",
+        "Lease на курьера",
+        "Гео-шардинг по городу + автоскейл"
+      ]
+    },
+    {
+      "slug": "ride-sharing",
+      "order": 7,
+      "title": "Райдшеринг",
+      "level": "senior",
+      "focus": "геоиндекс, матчинг, surge, поток геолокаций",
+      "scenario_path": "scenarios/07-ride-sharing.md",
+      "solution_path": "solutions/07-ride-sharing.md",
+      "functional": [
+        "Заказ поездки A→B",
+        "Матчинг с водителем",
+        "Live-трекинг и статус",
+        "Surge-цены и оплата"
+      ],
+      "non_functional": [
+        "Матчинг и апдейты — секунды/мс",
+        "Гео-«кто рядом» в реальном времени",
+        "Strong на назначении водителя"
+      ],
+      "interviewer_questions": [
+        "Масштаб поездок и водителей?",
+        "Частота координат?",
+        "Матчинг: ожидание или цена?"
+      ],
+      "key_metrics": {
+        "rides_per_day": "5M",
+        "rides_per_sec_peak": "~300",
+        "location_writes_per_sec": "~330k"
+      },
+      "components": [
+        "Location service",
+        "Geo index (in-mem)",
+        "Matching service",
+        "Rides DB",
+        "Driver lease",
+        "Pricing/surge"
+      ],
+      "consistency": {
+        "driver_assignment": "strong",
+        "locations_eta_surge": "eventual",
+        "ride_status": "strong"
+      },
+      "bottlenecks": [
+        "Hotspot-центр города",
+        "330k локаций/с",
+        "Матчинг-сервис"
+      ],
+      "trade_offs": [
+        "точность гео vs стоимость",
+        "sync vs async матчинг",
+        "локации в памяти vs БД"
+      ],
+      "red_flags": [
+        "гео-запросы в RDBMS на горячем пути",
+        "нет strong на назначении",
+        "игнор объёма локаций"
+      ],
+      "strong_signals": [
+        "In-memory гео-индекс, шард по ячейке",
+        "Lease на водителя",
+        "Расчёт доминирующей нагрузки локаций"
+      ]
+    },
+    {
+      "slug": "file-storage",
+      "order": 8,
+      "title": "Файловое хранилище",
+      "level": "mid-senior",
+      "focus": "blob-хранение, чанки, дедуп, метаданные, шеринг",
+      "scenario_path": "scenarios/08-file-storage.md",
+      "solution_path": "solutions/08-file-storage.md",
+      "functional": [
+        "Загрузка/скачивание (в т.ч. больших файлов)",
+        "Синхронизация устройств",
+        "Версионирование",
+        "Шеринг с правами"
+      ],
+      "non_functional": [
+        "Durability блоков",
+        "Большие файлы: чанки, докачка, дедуп",
+        "Метаданные sync — eventual"
+      ],
+      "interviewer_questions": [
+        "Размеры файлов?",
+        "Дедуп между пользователями?",
+        "Как разрешаем конфликты синхронизации?"
+      ],
+      "key_metrics": {
+        "users": "100M",
+        "uploads_per_day": "100M",
+        "storage_per_day": "~100 ТБ",
+        "downloads_per_sec": "~12k"
+      },
+      "components": [
+        "API Gateway",
+        "Metadata service",
+        "Block service",
+        "Object storage",
+        "Sync service",
+        "CDN"
+      ],
+      "consistency": {
+        "metadata": "strong",
+        "blocks": "immutable",
+        "sync": "eventual"
+      },
+      "bottlenecks": [
+        "Большие файлы",
+        "Горячий публичный файл",
+        "Metadata hot-shard"
+      ],
+      "trade_offs": [
+        "dedup vs latency/приватность",
+        "delta vs full sync",
+        "strong vs eventual метаданные"
+      ],
+      "red_flags": [
+        "нет чанков/дедупа",
+        "удаление блоков без refcount",
+        "метаданные и блоки в одной БД"
+      ],
+      "strong_signals": [
+        "Content-addressed блоки + refcount",
+        "Шард метаданных по owner",
+        "CDN на скачивании, multi-AZ durability"
+      ]
+    },
+    {
+      "slug": "job-scheduler",
+      "order": 9,
+      "title": "Планировщик задач",
+      "level": "mid-senior",
+      "focus": "coordinated timers, exactly-once, лидер-выборы, DLQ",
+      "scenario_path": "scenarios/09-job-scheduler.md",
+      "solution_path": "solutions/09-job-scheduler.md",
+      "functional": [
+        "Регистрация cron/one-off",
+        "Запуск по расписанию",
+        "Ретраи и DLQ",
+        "История запусков"
+      ],
+      "non_functional": [
+        "Не пропустить / не выполнить дважды",
+        "Нет единой точки отказа",
+        "Точность — секунды"
+      ],
+      "interviewer_questions": [
+        "Масштаб и частота задач?",
+        "Гарантия: exactly-once или at-least-once?",
+        "Пропустить или продублировать?"
+      ],
+      "key_metrics": {
+        "total_schedules": "10M",
+        "triggers_per_sec": "100k",
+        "midnight_storm_multiplier": "×10",
+        "runs_per_day": "~8.6B"
+      },
+      "components": [
+        "Schedule API",
+        "Schedule DB",
+        "Ticker/leader",
+        "Ready queue",
+        "Workers",
+        "Leases",
+        "DLQ"
+      ],
+      "consistency": {
+        "tick_dedup": "strong",
+        "leader_per_shard": "strong",
+        "history": "eventual"
+      },
+      "bottlenecks": [
+        "Шторм полночи",
+        "Горячий временной шард",
+        "Запись истории"
+      ],
+      "trade_offs": [
+        "central clock vs distributed timeline",
+        "exactly-once vs idempotent",
+        "пропуск vs дубль"
+      ],
+      "red_flags": [
+        "единственный планировщик без failover",
+        "нет дедупа запусков",
+        "игнор шторма полночи"
+      ],
+      "strong_signals": [
+        "Шард по времени + лидер на шард",
+        "Дедуп через run_id + lease",
+        "Догон пропусков + DLQ"
+      ]
+    },
+    {
+      "slug": "feature-flag-platform",
+      "order": 10,
+      "title": "Платформа фиче-флагов",
+      "level": "senior",
+      "focus": "read-heavy, правила таргетинга, low-latency SDK, staleness",
+      "scenario_path": "scenarios/10-feature-flag-platform.md",
+      "solution_path": "solutions/10-feature-flag-platform.md",
+      "functional": [
+        "CRUD флагов по окружениям",
+        "Правила таргетинга (%, атрибуты, allow/deny)",
+        "Evaluation API/SDK",
+        "Аудит и kill-switch"
+      ],
+      "non_functional": [
+        "Read-heavy (evaluation ≫ изменений)",
+        "Локальная оценка — микросекунды",
+        "Низкий staleness; fail-open/closed политика"
+      ],
+      "interviewer_questions": [
+        "Evaluation QPS?",
+        "Допустимый staleness?",
+        "Fail-open или fail-closed?"
+      ],
+      "key_metrics": {
+        "evaluation_qps": "~10M/s (локально)",
+        "config_size": "мегабайты в память SDK",
+        "control_plane_change_rate": "редкие"
+      },
+      "components": [
+        "Control plane",
+        "Config DB",
+        "Audit",
+        "Config delivery (SSE/CDN)",
+        "SDK",
+        "Local evaluation"
+      ],
+      "consistency": {
+        "flag_change": "eventual",
+        "evaluation": "deterministic",
+        "audit": "strong"
+      },
+      "bottlenecks": [
+        "Массовая рассылка конфигов",
+        "Серверная evaluation (если не локальная)",
+        "Тяжёлые правила"
+      ],
+      "trade_offs": [
+        "pull vs push конфигов",
+        "SDK-local vs server-side eval",
+        "fail-open vs fail-closed"
+      ],
+      "red_flags": [
+        "evaluation ходит в БД/сеть на каждый вызов",
+        "нестабильная рандомизация бакетов",
+        "нет версии конфига"
+      ],
+      "strong_signals": [
+        "Разделение control/data plane",
+        "Детерминированные бакеты (hash)",
+        "Версионирование и дельта-рассылка конфигов"
+      ]
+    }
+  ]
+}
