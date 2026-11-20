@@ -1,51 +1,43 @@
 ---
 type: lecture
 source: "https://rutube.ru/video/fa27809994f9b105fc8762dd3628127d/"
-created: 2026-11-17
+created: 2026-11-19
 tags:
   - course/postgres-qpt
 up: "[[index]]"
 ---
 
-# Группировка в PostgreSQL: алгоритмы и планы выполнения
+# Группировка и агрегация в PostgreSQL: планы выполнения
 
 > [!abstract] Обзор
-> Материал о том, когда в запросе возникает группировка и какими алгоритмами PostgreSQL её выполняет. Разбираются два основных способа — хэширование и сортировка, устройство узла HashAggregate, работа с памятью и пакетами (batches). Показано, что GROUP BY и SELECT DISTINCT по одной колонке дают идентичный план, а UNION без ALL выполняется через HashAggregate. Отдельно рассмотрены GroupAggregate и Unique, Mixed Aggregate для GROUPING SETS, параллельная агрегация и обязательная группировка через сортировку при PartitionBy в оконных функциях.
+> Материал о том, как PostgreSQL выполняет группировку и агрегацию. Разбираются два алгоритма — хеширование и сортировка — и то, как группировка возникает явно (GROUP BY) и неявно (DISTINCT, UNION, INTERSECT, EXCEPT). Показаны узлы планов HashAggregate, GroupAggregate, Unique, MixedAggregate, а также параллельные планы с Partial HashAggregate, Gather Merge и Finalize GroupAggregate. Отдельно описаны память хеш-таблицы, разбиение на пакеты, hash_mem_multiplier и расхождение расчётного числа пакетов с фактом. Завершают материал GROUPING SETS, CUBE, ROLLUP и оконные функции с OVER и PARTITION BY.
 
 > [!info] Курс
 > [[index|Оглавление курса]]
 
 ## Оглавление
-1. [[#1. Возникновение и алгоритмы группировки]]
-2. [[#2. Хэш-агрегация в PostgreSQL]]
-3. [[#3. Сортировка для группировки]]
-4. [[#4. Mixed Aggregate для GROUPING SETS]]
-5. [[#5. Параллельная агрегация]]
+1. [[#1. Явная и неявная группировка]]
+2. [[#2. Алгоритмы группировки: хеширование и сортировка]]
+3. [[#3. Память хеш-таблицы, батчи и расчёт пакетов]]
+4. [[#4. Параллельные планы агрегации]]
+5. [[#5. GROUPING SETS, CUBE, ROLLUP и MixedAggregate]]
+6. [[#6. Оконные функции: OVER, PARTITION BY и рамка окна]]
 
 **Схема** — [[#Схема]]
 **Итог** — [[#Итог]]
 
-## 1. Возникновение и алгоритмы группировки
+## 1. Явная и неявная группировка
 
-Группировка возникает при явном указании group by, а также неявно: при исключении дубликатов в distinct и в запросах с union, intersect и except. Выполняется она двумя основными способами — хэшированием (сканируется набор строк и строится хэш-таблица в оперативной памяти) или сортировкой. В сложных запросах возможно совместное использование этих методов.
-
-*Источник: [00:00:00]*
-
-> [!quote]- Кадр [00:00:00]
-> ![](frames/kf_0000.png)
-
-## 2. Хэш-агрегация в PostgreSQL
-
-При хэшировании для каждой строки вычисляется хэш-код от значения поля группировки, по последним разрядам определяется корзина, в запись помещается точное значение и счётчик агрегатной функции, который увеличивается при совпадении. В плане появляется узел HashAggregate с ключом группировки; он строит хэш-таблицу в памяти и выдаёт результат после её полного построения. Если памяти не хватает, хэш-таблица разбивается на пакеты (batches), объём памяти рассчитывается как work_mem * HashMem Multiplier. GROUP BY и SELECT DISTINCT по одной колонке дают идентичный план с HashAggregate, а UNION без ALL также использует HashAggregate для удаления дубликатов.
+В PostgreSQL группировка возникает явно при указании GROUP BY и неявно — при DISTINCT, а также в запросах с UNION, INTERSECT и EXCEPT. Удаление дубликатов выполняется через группировку: SELECT DISTINCT и GROUP BY по одному столбцу дают одинаковый план с узлом HashAggregate и последовательным сканированием. UNION объединяет два набора строк через узел Append, после чего HashAggregate удаляет дубликаты; без слова ALL дубликаты исключаются.
 
 ```sql
-=> EXPLAIN (costs off)
+>= EXPLAIN (costs off)
 SELECT fare_conditions
 FROM seats
 GROUP BY fare_conditions;
 
 QUERY PLAN
--------------------
+---------------------
 HashAggregate
   Group Key: fare_conditions
   ->  Seq Scan on seats
@@ -56,61 +48,210 @@ SELECT DISTINCT fare_conditions
 FROM seats;
 
 QUERY PLAN
--------------------
+---------------------
 HashAggregate
   Group Key: fare_conditions
   ->  Seq Scan on seats
 (3 rows)
 
-> EXPLAIN (costs off)
+=> EXPLAIN (costs off)
 SELECT fare_conditions
 FROM seats
 UNION
 SELECT fare_conditions
 FROM seats;
+            QUERY PLAN
+------------------------
+ HashAggregate
+   Group Key: seats.fare_conditions
+   ->  Append
+         ->  Seq Scan on seats
+         ->  Seq Scan on seats seats_1
+(5 rows)
+
+>= EXPLAIN (costs off)
+SELECT fare_conditions
+FROM seats
+UNION
+SELECT fare_conditions
+FROM seats;
+            QUERY PLAN
+------------------------
+ HashAggregate
+   Group Key: seats.fare_conditions
+   ->  Append
+         ->  Seq Scan on seats
+         ->  Seq Scan on seats seats_1
+(5 rows)
 ```
 
-*Источник: [00:01:00], [00:02:00]*
+*Источник: [00:00:20], [00:01:10], [00:01:30], [00:01:51], [00:02:11], [00:02:35] и др.*
 
-> [!quote]- Кадр [00:01:00]
+> [!quote]- Кадр [00:00:20]
 > ![](frames/kf_0001.png)
 
-## 3. Сортировка для группировки
+## 2. Алгоритмы группировки: хеширование и сортировка
 
-Второй способ группировки — сортировка, после которой читается отсортированный набор и формируются группы. Для расчёта агрегатной функции используется узел GroupAggregate, а для исключения дубликатов без агрегации — узел Unique. Если в оконных функциях указан PartitionBy, группировка всегда выполняется через сортировку.
+Группировка выполняется двумя алгоритмами: хешированием (узел HashAggregate) и сортировкой (узлы GroupAggregate и Unique). При хешировании строится хэш-таблица в оперативной памяти: для каждой строки вычисляется хэш-код ключа группировки, запись помещается в корзину, а если строка не попадает в нулевой пакет — во временный файл. Узел GroupAggregate читает отсортированный набор и создаёт новую группу при смене ключа; узел Unique устраняет дубликаты, пропуская строки с тем же ключом, что и предыдущая. В сложных запросах возможно совместное использование хеширования и сортировки.
 
-| Ситуация | Узел в плане |
-|---|---|
-| Исключение дубликатов без агрегации | Unique |
-| Расчёт агрегатной функции | GroupAggregate |
+```sql
+SELECT year, count(*) cnt
+FROM t
+GROUP BY year;
 
-*Источник: [00:02:00]*
+SELECT DISTINCT year
+FROM t;
 
-## 4. Mixed Aggregate для GROUPING SETS
+QUERY PLAN
+GroupAggregate
+  Group Key: ticket_no
+  ->  Index Only Scan using ticket_flights_pkey on ticket_flights
 
-GROUPING SETS требует нескольких группировок, и в плане появляется узел Mixed Aggregate.
+QUERY PLAN
+Result
+  ->  Unique
+    ->  Index Only Scan using ticket_flights_pkey on ticket_flights
+```
 
-*Источник: [00:02:00]*
+*Источник: [00:03:05], [00:03:28], [00:04:58], [00:05:19], [00:05:48], [00:06:08] и др.*
 
-## 5. Параллельная агрегация
+> [!quote]- Кадр [00:20:11]
+> ![](frames/kf_0055.png)
 
-В параллельном плане каждый процесс вычисляет агрегатную функцию по тем данным, которые он читает, а ведущий процесс собирает данные от каждого из процессов. Для финализации используется узел Finalize Group Aggregate.
+## 3. Память хеш-таблицы, батчи и расчёт пакетов
 
-*Источник: [00:02:00]*
+EXPLAIN (analyze) для HashAggregate показывает Batches и Memory Usage: если Batches = 1, вся хэш-таблица поместилась в оперативную память. При нехватке памяти хэш-таблица разбивается на пакеты (batches), каждый из которых должен помещаться в выделенный объём; если пакет не влезает в стандартные 8 МБ, он дробится дальше. Объём памяти под хеш-таблицу рассчитывается как work_mem × hash_mem_multiplier (например, при work_mem = 4 МБ и hash_mem_multiplier = 2 получается 8 МБ). Планировщик оценивает число пакетов заранее (Planned Partitions), но фактическое число может отличаться: в примере с группировкой по book_ref расчёт дал 32, а выполнение — 33 пакета.
+
+```sql
+>= EXPLAIN (analyze, timing off, costs off)
+SELECT aircraft_code, count(*)
+FROM seats
+GROUP BY aircraft_code;
+
+ HashAggregate (actual rows=9 loops=1)
+   Group Key: aircraft_code
+   Batches: 1  Memory Usage: 24kB
+   ->  Seq Scan on seats (actual rows=1339 loops=1)
+
+EXPLAIN (analyze, timing off, costs off)
+SELECT flight_id, count(*)
+FROM ticket_flights
+GROUP BY flight_id;
+
+=> EXPLAIN
+SELECT book_ref, count(*)
+FROM tickets
+GROUP BY book_ref;
+
+                    QUERY PLAN
+----------------------------------------------------------
+ HashAggregate  (cost=244820.70..282786.70 rows=1492293 width=15)
+   Group Key: book_ref
+   Planned Partitions: 32
+   ->  Seq Scan on tickets  (cost=0.00..78910.20 rows=2949520 width=7)
+(4 rows)
+
+=> EXPLAIN (analyze, timing off, costs off)
+SELECT aircraft_code, count(*)
+FROM seats
+GROUP BY aircraft_code;
+
+ HashAggregate (actual rows=9 loops=1)
+   Group Key: aircraft_code
+   Batches: 1  Memory Usage: 24kB
+   ->  Seq Scan on seats (actual rows=1339 loops=1)
+
+EXPLAIN (analyze, timing off, costs off)
+SELECT flight_id, count(*)
+FROM ticket_flights
+GROUP BY flight_id;
+```
+
+> [!info] Зачем это нужно
+> Желательно размещать хеш-таблицу в оперативной памяти целиком.
+
+*Источник: [00:06:49], [00:07:29], [00:07:50], [00:08:14], [00:09:26], [00:09:46] и др.*
+
+> [!quote]- Кадр [00:07:29]
+> ![](frames/kf_0020.png)
+
+> [!quote]- Кадр [00:09:26]
+> ![](frames/kf_0025.png)
+
+## 4. Параллельные планы агрегации
+
+В параллельном плане каждый процесс строит часть хеш-таблицы (Partial HashAggregate), вычисляя агрегатную функцию по своим данным с помощью собственной хеш-таблицы. Если выполняется группировка хеширования, то в каждом процессе, как правило, будет узел Parallel SeqScan и узел Partial HashAggregate. Если используется сортировка, в каждом процессе выполняется Parallel SeqScan и Partial HashAggregate, затем добавляется узел Sort, после чего Gather Merge и Finalize GroupAggregate. В параллельных планах при сборе данных появляется узел Gather Merge, который объединяет данные с сохранением порядка сортировки; для финализации используется узел Finalize GroupAggregate. По умолчанию используется два процесса. Результаты воркеров собираются в один отсортированный набор, после чего вычисляется агрегатная функция.
+
+*Источник: [00:06:08], [00:14:57], [00:15:17]*
+
+> [!quote]- Кадр [00:15:17]
+> ![](frames/kf_0042.png)
+
+## 5. GROUPING SETS, CUBE, ROLLUP и MixedAggregate
+
+Для группировки по нескольким наборам полей в запросе используются GROUPING SETS, CUBE или ROLLUP. GROUPING SETS по нескольким столбцам означает необходимость группировки по всем сочетаниям этих столбцов. При группировке с GROUPING SETS в плане запроса может появиться узел MixedAggregate. Таблица сканируется последовательно и сортируется по fare_conditions в узле сорт, причём так как таблица большая, здесь будет внешняя сортировка. На первом этапе выполняется группировка по столбцу fare_conditions, строки переупорядочиваются по ticket_no и записываются в хеш-таблицу с ключом amount; на втором этапе сканируется набор, отсортированный по ticket_no, и значения группируются по этому же столбцу, затем сканируется хеш-таблица и значения группируются по столбцу amount.
+
+```sql
+QUERY PLAN
+MixedAggregate
+  Hash Key: amount
+  Group Key: fare_conditions
+  Sort Key: ticket_no
+  Group Key: ticket_no
+  -> Sort
+        Sort Key: fare_conditions
+        -> Seq Scan on ticket_flights
+
+SELECT fare_conditions, ticket_no, amount, count(*)
+FROM ticket_flights
+GROUP BY
+  GROUPING SETS (fare_conditions, ticket_no, amount);
+```
+
+*Источник: [00:12:35], [00:13:15], [00:13:55], [00:14:15], [00:17:16]*
+
+> [!quote]- Кадр [00:17:16]
+> ![](frames/kf_0047.png)
+
+## 6. Оконные функции: OVER, PARTITION BY и рамка окна
+
+Существует вариант OVER (PARTITION BY ORDER BY), а также вариант OVER (PARTITION BY). Для каждой строки рамка охватывает все строки той группы, к которой относится строка; в правом примере рамка начинается на первой строке группы и заканчивается текущей. В запросе SELECT status, count(*) OVER (PARTITION BY status) используется оконная функция count(*) с окном PARTITION BY status, а в описании окна PARTITION BY выполняет группировку. В целевой список можно добавить вызов row_number с тем же окном OVER (PARTITION BY status) и посмотреть, как изменится план и результат.
+
+```sql
+SELECT status, count(*) OVER (PARTITION BY status)
+FROM flights
+WHERE flight_no = 'PG0007'
+AND departure_airport = 'VKO'
+AND flight_id BETWEEN 24104 AND 24115;
+```
+
+*Источник: [00:19:31], [00:19:51], [00:20:31], [00:21:01]*
+
+> [!quote]- Кадр [00:19:31]
+> ![](frames/kf_0053.png)
+
+> [!quote]- Кадр [00:19:51]
+> ![](frames/kf_0054.png)
 
 ## Схема
 
 ```mermaid
 flowchart TD
-    n1["1. Возникновение и алгоритмы группировки"]
-    n2["2. Хэш-агрегация в PostgreSQL"]
-    n3["3. Сортировка для группировки"]
-    n1 -->|частный случай: хэширование как один из двух алг…| n2
-    n1 -->|частный случай: сортировка как второй алгоритм| n3
+    n1["1. Явная и неявная группировка"]
+    n2["2. Алгоритмы группировки: хеширование и сортировка"]
+    n3["3. Память хеш-таблицы, батчи и расчёт пакетов"]
+    n4["4. Параллельные планы агрегации"]
+    n5["5. GROUPING SETS, CUBE, ROLLUP и MixedAggregate"]
+    n6["6. Оконные функции: OVER, PARTITION BY и рамка окна"]
+    n1 --> n2
+    n2 --> n3
+    n3 --> n4
+    n4 --> n5
+    n5 --> n6
 ```
 
 ## Итог
 
 > [!success] Что в итоге
-> Группировка в PostgreSQL возникает как при явном group by, так и неявно — в distinct, union, intersect и except. Выполняется она двумя основными способами: хэшированием (узел HashAggregate, корзины, счётчик, пакеты при нехватке памяти) или сортировкой (узел GroupAggregate, узел Unique для дубликатов). GROUP BY и SELECT DISTINCT по одной колонке дают идентичный план, UNION без ALL выполняется через HashAggregate, а при PartitionBy в оконных функциях группировка всегда идёт через сортировку.
+> Группировка в PostgreSQL выполняется двумя алгоритмами — хешированием или сортировкой, и одна и та же операция проявляется при GROUP BY, при DISTINCT, в UNION и в оконных функциях с PARTITION BY. Группировка хешированием строит хэш-таблицу, распределяя строки по корзинам и пакетам, что видно в плане как узел HashAggregate с батчами и потреблением памяти; при нехватке памяти таблица разбивается на пакеты с временными файлами. Группировка сортировкой использует узлы GroupAggregate и Unique, а GROUPING SETS приводит к MixedAggregate и этапам группировки. В параллельных планах добавляются Partial HashAggregate, Gather Merge и Finalize GroupAggregate.
 

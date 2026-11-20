@@ -1,149 +1,886 @@
 ---
 type: lecture
 source: "https://rutube.ru/video/90eeabe3332c193b2822b5bd75f928ee/"
-created: 2026-11-17
+created: 2026-11-19
 tags:
   - course/postgres-qpt
 up: "[[index]]"
 ---
 
-# Методы доступа к данным в PostgreSQL: Seq Scan, Index Scan и Bitmap Scan
+# PostgreSQL: методы доступа, индексы, буферный кэш и стоимость запросов
 
 > [!abstract] Обзор
-> Материал о том, как Postgres достучится до табличных данных: разбираются методы доступа (Seq Scan, Index Scan, Index-Only Scan, Bitmap Scan), устройство индекса и B-дерева, стоимость плана и влияние параметров вроде random_page_cost. Объясняется, как строится битовая карта, что такое lossy-карта и Recheck Condition, как работают буферный кэш и буферные кольца. Отдельно рассматриваются мёртвые строки, Vacuum и VACUUM FULL, CLUSTER, карта видимости и роль ANALYZE, ограничения многоколоночных индексов и покрывающие (include) индексы. Влияние селективности условий на выбор метода описывается через точки S1 и S2. Проверять поведение запросов и ввод-вывод помогают EXPLAIN ANALYZE и статистика в pg_stat_io, в PG 18 — по отдельным процессам.
+> Материал о том, как PostgreSQL добирается до табличных данных: методы доступа, последовательное сканирование (Seq Scan), индексное сканирование (Index Scan), Index Only Scan и сканирование по битовой карте. Показано, как EXPLAIN и EXPLAIN ANALYZE выводят план, буферы и время, а планировщик оценивает стоимость через relpages, seq_page_cost, cpu_tuple_cost и random_page_cost из pg_class. Разобрано устройство индексов на B-дереве, сортируемые типы, размещение NULL, Include-индексы и обязательные индексы для ограничений целостности. Отдельно рассмотрены буферный кэш, массовое вытеснение, буферное кольцо из 32 страниц и статистика в pg_stat_io, а также работа с мёртвыми версиями строк: DELETE, VACUUM и ANALYZE. Bitmap Index Scan и Bitmap Heap Scan, объединение карт через BitmapAnd и BitmapOr, параметр work_mem и lossy-фрагменты показаны вместе с диапазонными условиями. Команда CLUSTER упорядочивает данные по индексу, после чего планировщик может предпочесть обычное индексное сканирование.
 
 > [!info] Курс
 > [[index|Оглавление курса]]
 
 ## Оглавление
-1. [[#1. Методы доступа и Seq Scan]]
-2. [[#2. Устройство индекса и B-дерево]]
-3. [[#3. Index Scan, Index-Only Scan и оптимизации]]
-4. [[#4. Bitmap Scan и lossy-карта]]
-5. [[#5. Буферный кэш и буферные кольца]]
-6. [[#6. Стоимость плана и параметры]]
-7. [[#7. Vacuum, VACUUM FULL и CLUSTER]]
-8. [[#8. ANALYZE и карта видимости]]
-9. [[#9. Многоколоночные и покрывающие индексы]]
-10. [[#10. Селективность и точки S1, S2]]
-11. [[#11. Диагностика: EXPLAIN ANALYZE и pg_stat_io]]
+1. [[#1. Методы доступа: Seq Scan и Index Scan]]
+2. [[#2. Диапазонный поиск, IN и Index Scan Backward]]
+3. [[#3. EXPLAIN и оценка стоимости планировщиком]]
+4. [[#4. Сканирование по битовой карте и work_mem]]
+5. [[#5. Устройство B-дерева]]
+6. [[#6. Индексы для ограничений целостности]]
+7. [[#7. Include-индексы и Index Only Scan]]
+8. [[#8. Мёртвые версии строк и VACUUM]]
+9. [[#9. Буферный кэш и pg_stat_io]]
+10. [[#10. Команда CLUSTER]]
 
 **Схема** — [[#Схема]]
 **Итог** — [[#Итог]]
 
-## 1. Методы доступа и Seq Scan
+## 1. Методы доступа: Seq Scan и Index Scan
 
-Метод доступа — это то, каким образом Postgres может достучаться до данных; наиболее важна работа с табличными данными. Планировщик располагает методами: последовательное сканирование (Seq Scan), сканирование индекса (Index Scan), сканирование только индекса (Index-Only Scan) и сканирование по битовой карте (Bitmap Scan). Seq Scan последовательно читает все страницы таблицы в буферный кэш, проверяет видимость версий строк и возвращает данные в произвольном порядке; время зависит от физического размера файлов таблицы. Выбор метода сильно зависит от конкретных таблиц, индексов и множества других параметров. Пример простого Seq Scan — SELECT * FROM имя_таблицы.
+Методы доступа — это способы, которыми Postgres может достучаться до данных; наиболее важен доступ к табличным данным, но данные можно получать также из функций или из обёрток сторонних данных. Seq Scan — последовательное чтение всех страниц таблицы, представленное в плане узлом Seq Scan: время зависит от физического размера файла, данные возвращаются в произвольном порядке, проверяется видимость версий строк, а страницы читаются в буферный кэш. Index Scan ищет одно значение и избегает полного чтения таблицы: поиск начинается с корневой страницы, максимально эффективен при высокой селективности, страницы таблицы читаются хаотично, а стоимость зависит от высоты дерева и оценивается параметром random_page_cost. Index-Only Scan применяется, когда все столбцы запроса входят в индекс, в который можно добавить неключевой столбец любого типа через INCLUDE; на таблице ticket_flights составной индекс по ticket_no и flight_id используется при запросе по ticket_no или по обоим столбцам, а запрос только по flight_id этот индекс не использует и до версии 18 выполнялся Parallel Seq Scan с фильтром. Index Cond содержит условия, по которым в индексе искали данные, а Filter накладывается на найденные результаты индексного доступа; в PostgreSQL 18 появилась возможность использовать многоколоночный индекс, даже когда указано значение только второго столбца.
 
-*Источник: [00:00:00], [00:01:00]*
+```sql
+=> SELECT current_setting('random_page_cost');
+
+=> EXPLAIN SELECT * FROM bookings WHERE book_ref = 'CDE888';
+
+=> EXPLAIN SELECT * FROM bookings WHERE book_ref = 'CDE088';
+
+                         QUERY PLAN
+------------------------------------------------------------------
+ Index Scan using bookings_pkey on bookings  (cost=0.43..8.45 rows=1 width=21)
+   Index Cond: (book_ref = 'CDE088'::bpchar)
+(2 rows)
+
+=> EXPLAIN SELECT *
+FROM ticket_flights
+WHERE ticket_no = '0005432000284' AND flight_id = 187662;
+
+QUERY PLAN
+-------------------------------------------------
+Index Scan using ticket_flights_pkey on ticket_flights
+  Index Cond: ((ticket_no = '0005432000284'::bpchar) AND (flight_id = 187662))
+
+=> EXPLAIN SELECT *
+FROM ticket_flights
+WHERE flight_id = 187662;
+
+Gather  (cost=1000.00..114678.36 rows=107 width=32)
+  Workers Planned: 2
+  ->  Parallel Seq Scan on ticket_flights  (cost=0.00..113667.66 rows=45 width=32)
+        Filter: (flight_id = 187662)
+
+=> EXPLAIN (costs off)
+SELECT total_amount FROM bookings
+WHERE total_amount > 200000;
+
+Index Only Scan using bookings_total_amount_idx on bookings
+  Index Cond: (total_amount > '200000'::numeric)
+
+=> EXPLAIN
+SELECT * FROM bookings
+WHERE book_ref = 'CDE08B' AND total_amount > 1000;
+
+QUERY PLAN
+-------------------------------------------
+ Index Scan using bookings_pkey on bookings  (cost=0.43..8.45 rows=1 width=21)
+   Index Cond: (book_ref = 'CDE08B'::bpchar)
+   Filter: (total_amount > '1000'::numeric)
+(3 rows)
+
+=> EXPLAIN (analyze, costs off, timing off)
+SELECT count(*) FROM bookings
+WHERE total_amount < '5000' AND book_date > $1;
+
+   -> Bitmap Heap Scan on bookings (actual rows=129 loops=1)
+      Rows Removed by Index Recheck: 89895
+      Heap Blocks: exact=811 lossy=568
+      -> BitmapAnd (actual rows=0 loops=1)
+         -> Bitmap Index Scan on bookings_total_amount_idx (actual rows=1471 loops=1)
+         -> Bitmap Index Scan on bookings_book_date_idx (actual rows=178142 loops=1)
+
+Bitmap Heap Scan on bookings  (cost=94.57..9854.66 rows=4921 width=21)
+  Recheck Cond: (total_amount < '5000'::numeric)
+  ->  Bitmap Index Scan on bookings_total_amount_idx  (cost=0.00..93.34 rows=4921 width=0)
+        Index Cond: (total_amount < '5000'::numeric)
+
+=> SELECT current_setting('random_page_cost');
+
+=> EXPLAIN SELECT * FROM bookings WHERE book_ref = 'CDE888';
+
+=> EXPLAIN SELECT * FROM bookings WHERE book_ref = 'CDE088';
+
+                         QUERY PLAN
+------------------------------------------------------------------
+ Index Scan using bookings_pkey on bookings  (cost=0.43..8.45 rows=1 width=21)
+   Index Cond: (book_ref = 'CDE088'::bpchar)
+(2 rows)
+
+=> EXPLAIN SELECT *
+FROM ticket_flights
+WHERE ticket_no = '0005432000284' AND flight_id = 187662;
+
+QUERY PLAN
+-------------------------------------------------
+Index Scan using ticket_flights_pkey on ticket_flights
+  Index Cond: ((ticket_no = '0005432000284'::bpchar) AND (flight_id = 187662))
+
+=> EXPLAIN SELECT *
+FROM ticket_flights
+WHERE flight_id = 187662;
+
+Gather  (cost=1000.00..114678.36 rows=107 width=32)
+  Workers Planned: 2
+  ->  Parallel Seq Scan on ticket_flights  (cost=0.00..113667.66 rows=45 width=32)
+        Filter: (flight_id = 187662)
+
+=> EXPLAIN (costs off)
+SELECT total_amount FROM bookings
+WHERE total_amount > 200000;
+
+Index Only Scan using bookings_total_amount_idx on bookings
+  Index Cond: (total_amount > '200000'::numeric)
+
+=> EXPLAIN SELECT *
+FROM ticket_flights
+WHERE ticket_no = '0005432000284' AND flight_id = 187662;
+
+QUERY PLAN
+-------------------------------------------------
+Index Scan using ticket_flights_pkey on ticket_flights
+  Index Cond: ((ticket_no = '0005432000284'::bpchar) AND (flight_id = 187662))
+
+=> EXPLAIN SELECT *
+FROM ticket_flights
+WHERE flight_id = 187662;
+
+Gather  (cost=1000.00..114678.36 rows=107 width=32)
+  Workers Planned: 2
+  ->  Parallel Seq Scan on ticket_flights  (cost=0.00..113667.66 rows=45 width=32)
+        Filter: (flight_id = 187662)
+
+=> EXPLAIN (costs off)
+SELECT total_amount FROM bookings
+WHERE total_amount > 200000;
+
+Index Only Scan using bookings_total_amount_idx on bookings
+  Index Cond: (total_amount > '200000'::numeric)
+
+>= EXPLAIN SELECT *
+FROM ticket_flights
+WHERE ticket_no = '0005432000284' AND flight_id = 187662;
+
+QUERY PLAN
+-------------------------------------------------
+Index Scan using ticket_flights_pkey on ticket_flights
+  Index Cond: ((ticket_no = '0005432000284'::bpchar) AND (flight_id = 187662))
+
+=> EXPLAIN SELECT *
+FROM ticket_flights
+WHERE flight_id = 187662;
+
+Gather  (cost=1000.00..114678.36 rows=107 width=32)
+  Workers Planned: 2
+  ->  Parallel Seq Scan on ticket_flights  (cost=0.00..113667.66 rows=45 width=32)
+        Filter: (flight_id = 187662)
+
+=> EXPLAIN
+SELECT * FROM bookings
+WHERE book_ref = 'CDE08B' AND total_amount > 1000;
+
+QUERY PLAN
+-------------------------------------------
+ Index Scan using bookings_pkey on bookings  (cost=0.43..8.45 rows=1 width=21)
+   Index Cond: (book_ref = 'CDE08B'::bpchar)
+   Filter: (total_amount > '1000'::numeric)
+(3 rows)
+
+=> EXPLAIN
+SELECT * FROM bookings
+WHERE book_ref = 'CDE08B' AND total_amount > 1000;
+
+ Index Scan using bookings_pkey on bookings  (cost=0.43..8.45 rows=1 width=21)
+   Index Cond: (book_ref = 'CDE08B'::bpchar)
+   Filter: (total_amount > '1000'::numeric)
+```
+
+| Метод | Когда применяется |
+|---|---|
+| Index Scan | поиск значений с переходами в табличные страницы |
+| Index-Only Scan | все столбцы запроса входят в индекс |
+
+| Запрос | План |
+|---|---|
+| по ticket_no | Index Scan using ticket_flights_pkey |
+| по flight_id | Parallel Seq Scan с Filter: (flight_id = 187662) |
+
+> [!info] Зачем это нужно
+> Цель индекса — избежать полного чтения таблицы при поиске одного значения.
+
+*Источник: [00:00:00], [00:00:20], [00:24:47], [00:28:29], [00:30:19], [00:31:09] и др.*
 
 > [!quote]- Кадр [00:00:00]
 > ![](frames/kf_0000.png)
 
-> [!quote]- Кадр [00:01:00]
+> [!quote]- Кадр [01:12:53]
+> ![](frames/kf_0177.png)
+
+> [!quote]- Кадр [01:10:54]
+> ![](frames/kf_0172.png)
+
+> [!quote]- Кадр [00:00:20]
 > ![](frames/kf_0001.png)
 
-## 2. Устройство индекса и B-дерево
+> [!quote]- Кадр [00:28:29]
+> ![](frames/kf_0067.png)
 
-При индексном сканировании доступ к таблице идёт не напрямую, а через индекс — дополнительную структуру во внешней памяти, сохраняемую на диске, чтобы находить данные быстрее: сначала находится нужное в индексе, затем точечно происходит обращение к данным таблицы. При создании индекса указываются ключи — значения столбцов или выражения, и составляется список ключей и ссылок на строки таблицы; листовые страницы содержат ссылки на табличные строки и связаны двунаправленным списком, внутренние — ссылки на следующие страницы. B-дерево — сбалансированное дерево поиска: от корня до листовой страницы всегда одинаковое количество уровней; поддерживает только сортируемые типы данных; ускоряет доступ, когда нужна малая часть значений; поддерживает первичный и уникальный ключи; побочный эффект — результаты выдаются автоматически отсортированными. Для поиска диапазона сначала находят нижнюю границу спуском от корня к листовой, затем используют двунаправленный список. Составной индекс хранит значения, отсортированные сначала по первому столбцу, затем по второму, и эффективен при условиях по обоим столбцам; по умолчанию NULL записываются в конец индекса, можно указать NULLS FIRST или NULLS LAST; благодаря двунаправленному списку возможно обратное сканирование (Index Scan Backward).
+> [!quote]- Кадр [00:24:47]
+> ![](frames/kf_0059.png)
+
+> [!quote]- Кадр [00:34:29]
+> ![](frames/kf_0081.png)
+
+> [!quote]- Кадр [01:03:42]
+> ![](frames/kf_0155.png)
+
+> [!quote]- Кадр [00:34:09]
+> ![](frames/kf_0080.png)
+
+## 2. Диапазонный поиск, IN и Index Scan Backward
+
+Индексный доступ можно использовать не только для поиска одного значения, но и для поиска по диапазону; для этого применяются операторы >, < и BETWEEN. При Index Scan по диапазону Postgres последовательно считывает значения индекса и может несколько раз прочитать одну и ту же табличную страницу; страницы читаются хаотично — в примере последняя страница читается три раза. Операция ORDER BY по индексированному полю не добавляет накладных расходов, а для ORDER BY book_ref DESC планировщик может использовать тот же индекс, но сканировать листовые страницы от большего значения к меньшему (Index Scan Backward). Перечисление значений через IN возвращает тот же результат, но требует в два раза больше ресурсов: в 16 версии поиск по IN выполняется от корня для каждого значения, а в 17-й версии добавлена оптимизация без многократного отхода от корня.
+
+```sql
+=> EXPLAIN (costs off)
+SELECT * FROM bookings
+WHERE book_ref > '000900' AND book_ref < '000939'
+ORDER BY book_ref;
+
+                    QUERY PLAN
+----------------------------------------------------------
+ Index Scan using bookings_pkey on bookings
+   Index Cond: ((book_ref > '000900'::bpchar) AND (book_ref < '000939'::bpchar))
+(2 rows)
+
+=> EXPLAIN (analyze, buffers, costs off, timing off, summary off)
+SELECT * FROM bookings
+WHERE book_ref > '000900' AND book_ref < '000939'
+ORDER BY book_ref DESC;
+
+                    QUERY PLAN
+----------------------------------------------------------
+ Index Scan Backward using bookings_pkey on bookings (actual rows=5 loops=1)
+   Index Cond: ((book_ref > '000900'::bpchar) AND (book_ref < '000939'::bpchar))
+   Buffers: shared hit=4 read=1
+Planning:
+   Buffers: shared hit=12
+(5 rows)
+
+=> EXPLAIN (analyze, buffers, costs off)
+SELECT * FROM bookings
+WHERE book_ref IN ('000906','000909','000917','000930','000938')
+ORDER By book_ref DESC;
+
+QUERY PLAN
+
+Index Scan Backward using bookings_pkey on bookings (actual time=0.042..0.062 rows=5 loops=1)
+  Index Cond: (book_ref = ANY ('{000906,000909,000917,000930,000938}'::bpchar[]))
+  Buffers: shared hit=24
+Planning Time: 0.129 ms
+Execution Time: 0.078 ms
+(5 rows)
+
+>= SELECT reads, hits, reuses
+FROM pg_stat_io
+WHERE context = 'bulkread' -- Сканирование больших таблиц
+AND object = 'relation'
+AND backend_type = 'client backend';
+
+EXPLAIN
+SELECT * FROM bookings WHERE total_amount < 5000;
+
+ Bitmap Heap Scan on bookings  (cost=94.57..9854.66 rows=4921 width=21)
+   Recheck Cond: (total_amount < '5000'::numeric)
+   ->  Bitmap Index Scan on bookings_total_amount_idx  (cost=0.00..93.34 rows=4921 width=0)
+         Index Cond: (total_amount < '5000'::numeric)
+
+EXPLAIN (costs off)
+SELECT * FROM bookings
+WHERE total_amount < 5000 OR total_amount > 500000;
+
+ Bitmap Heap Scan on bookings
+   Recheck Cond: ((total_amount < '5000'::numeric) OR (total_amount > '500000'::numeric))
+   ->  BitmapOr
+         ->  Bitmap Index Scan on bookings_total_amount_idx
+               Index Cond: (total_amount < '5000'::numeric)
+         ->  Bitmap Index Scan on bookings_total_amount_idx
+               Index Cond: (total_amount > '500000'::numeric)
+
+=> EXPLAIN (analyze, costs off, timing off)
+SELECT count(*) FROM bookings
+WHERE total_amount < '5000' AND book_date > $1;
+
+   -> Bitmap Heap Scan on bookings (actual rows=129 loops=1)
+      Rows Removed by Index Recheck: 89895
+      Heap Blocks: exact=811 lossy=568
+      -> BitmapAnd (actual rows=0 loops=1)
+         -> Bitmap Index Scan on bookings_total_amount_idx (actual rows=1471 loops=1)
+         -> Bitmap Index Scan on bookings_book_date_idx (actual rows=178142 loops=1)
+
+=> EXPLAIN (costs off)
+SELECT * FROM bookings
+WHERE total_amount < 5000 OR total_amount > 500000;
+
+Bitmap Heap Scan on bookings
+  Recheck Cond: ((total_amount < '5000'::numeric) OR (total_amount > '500000'::numeric))
+  ->  BitmapOr
+        ->  Bitmap Index Scan on bookings_total_amount_idx
+              Index Cond: (total_amount < '5000'::numeric)
+        ->  Bitmap Index Scan on bookings_total_amount_idx
+              Index Cond: (total_amount > '500000'::numeric)
+```
+
+*Источник: [00:34:51], [00:35:19], [00:38:06], [00:38:26], [00:39:37], [00:39:57] и др.*
+
+> [!quote]- Кадр [00:34:51]
+> ![](frames/kf_0082.png)
+
+> [!quote]- Кадр [00:35:19]
+> ![](frames/kf_0083.png)
+
+## 3. EXPLAIN и оценка стоимости планировщиком
+
+EXPLAIN без Analyze показывает только планируемый метод доступа, а EXPLAIN ANALYZE реально выполняет запрос и выводит фактические результаты; с опцией BUFFERS — сколько буферов прочитал запрос, включая shared hit, а вывод содержит actual rows, Buffers, Planning Time и Execution Time. Самый простой способ получить последовательное сканирование таблицы — запрос SELECT * FROM имя_таблицы; для пустой таблицы стоимость плана минимальна — не прочитано ни одной версии строки. Оценку количества страниц таблицы планировщик берёт из pg_class, а составляющая ввода-вывода рассчитывается как relpages * seq_page_cost. Стоимость указывается в условных единицах и состоит из начальной стоимости узла (плата, чтобы начать обрабатывать первую строку; для Seq Scan равна нулю) и полной стоимости получения всех данных; стоимость обработки строк оценивается как reltuples * cpu_tuple_cost (по умолчанию 0.01). Стоимость чтения одной индексной страницы определяется параметром random_page_cost: по умолчанию он равен 4, что больше seq_page_cost, а для современных SSD-дисков значение стоит существенно уменьшить — это увеличивает вероятность выбора индексного доступа в пограничных случаях.
+
+```sql
+=> EXPLAIN (analyze, buffers, timing off)
+SELECT count(*) FROM flights_copy;
+
+ Aggregate  (cost=0.00..0.01 rows=1 width=8) (actual rows=1 loops=1)
+   ->  Seq Scan on flights_copy  (cost=0.00..0.00 rows=1 width=0) (actual rows=0 loops=1)
+ Planning:
+ Buffers: shared hit 2
+ Planning Time: 0.114 ms
+ Execution Time: 0.034 ms
+
+EXPLAIN (buffers) SELECT * FROM flights;
+
+=> SELECT relpages, current_setting('seq_page_cost'),
+    relpages * current_setting('seq_page_cost')::real AS total
+FROM pg_class WHERE relname = 'flights';
+=> SELECT reltuples, current_setting('cpu_tuple_cost'),
+    reltuples * current_setting('cpu_tuple_cost')::real AS total
+FROM pg_class WHERE relname = 'flights';
+
+retuples | current setting | total
+----------+-----------------+-------
+  214867 | 0.01            | 2148.67
+(1 row)
+
+=> SELECT current_setting('random_page_cost');
+ current_setting
+-----------------
+             4
+(1 row)
+
+=> EXPLAIN (analyze, buffers, timing off)
+SELECT count(*) FROM flights_copy;
+
+ Aggregate  (cost=0.00..0.01 rows=1 width=8) (actual rows=1 loops=1)
+   ->  Seq Scan on flights_copy  (cost=0.00..0.00 rows=1 width=0) (actual rows=0 loops=1)
+ Planning:
+ Buffers: shared hit 2
+ Planning Time: 0.114 ms
+ Execution Time: 0.034 ms
+
+EXPLAIN (buffers) SELECT * FROM flights;
+
+>= EXPLAIN (analyze, buffers, timing off)
+SELECT count(*) FROM flights_copy;
+QUERY PLAN
+--------------------------------------------------------------------------
+ Aggregate  (cost=0.00..0.01 rows=1 width=8) (actual rows=1 loops=1)
+   ->  Seq Scan on flights_copy  (cost=0.00..0.00 rows=1 width=0) (actual rows=0 loops=1)
+ Planning:
+   Buffers: shared hit=2
+ Planning Time: 0.114 ms
+ Execution Time: 0.034 ms
+(6 rows)
+
+=> EXPLAIN (analyze, costs off, timing off, summary off)
+SELECT total_amount FROM bookings
+WHERE total_amount > 200000;
+
+----------------------------------------
+QUERY PLAN
+Index Only Scan using bookings_total_amount_idx on bookings (actual rows=141535 loops=1)
+  Index Cond: (total_amount > '200000'::numeric)
+  Heap Fetches: 0
+(3 rows)
+
+=> EXPLAIN (analyze, buffers, timing off)
+SELECT count(*) FROM flights_copy;
+
+ Aggregate  (cost=0.00..0.01 rows=1 width=8) (actual rows=1 loops=1)
+   ->  Seq Scan on flights_copy  (cost=0.00..0.00 rows=1 width=0) (actual rows=0 loops=1)
+ Planning:
+ Buffers: shared hit 2
+ Planning Time: 0.114 ms
+ Execution Time: 0.034 ms
+
+EXPLAIN (buffers) SELECT * FROM flights;
+
+=> EXPLAIN (analyze, buffers, timing off)
+SELECT count(*) FROM flights_copy;
+
+ Aggregate  (cost=0.00..0.01 rows=1 width=8) (actual rows=1 loops=1)
+   ->  Seq Scan on flights_copy  (cost=0.00..0.00 rows=1 width=0) (actual rows=0 loops=1)
+ Planning:
+ Buffers: shared hit 2
+ Planning Time: 0.114 ms
+ Execution Time: 0.034 ms
+
+=> EXPLAIN (analyze, buffers, timing off)
+SELECT count(*) FROM flights_copy;
+
+QUERY PLAN
+Aggregate  (cost=0.00..0.01 rows=1 width=8) (actual rows=1 loops=1)
+  ->  Seq Scan on flights_copy  (cost=0.00..0.00 rows=1 width=0) (actual rows=0 loops=1)
+Planning:
+Buffers: shared hit=2
+Planning Time: 0.114 ms
+Execution Time: 0.034 ms
+
+=> SELECT relpages, current_setting('seq_page_cost'),
+    relpages * current_setting('seq_page_cost')::real AS total
+FROM pg_class WHERE relname = 'flights';
+=> SELECT reltuples, current_setting('cpu_tuple_cost'),
+    reltuples * current_setting('cpu_tuple_cost')::real AS total
+FROM pg_class WHERE relname = 'flights';
+
+retuples | current setting | total
+----------+-----------------+-------
+  214867 | 0.01            | 2148.67
+(1 row)
+
+=> SELECT current_setting('random_page_cost');
+ current_setting
+-----------------
+             4
+(1 row)
+
+SELECT relpages, current_setting('seq_page_cost'),
+    relpages * current_setting('seq_page_cost')::real AS total
+FROM pg_class WHERE relname = 'flights';
+
+=> SELECT reltuples, current_setting('cpu_tuple_cost'),
+    reltuples * current_setting('cpu_tuple_cost')::real AS total
+FROM pg_class WHERE relname = 'flights';
+
+retuples | current setting | total
+----------+-----------------+-------
+  214867 | 0.01            | 2148.67
+(1 row)
+
+=> SELECT current_setting('random_page_cost');
+ current_setting
+-----------------
+             4
+(1 row)
+```
+
+*Источник: [00:02:05], [00:04:33], [00:04:53], [00:07:21], [00:09:11], [00:10:31] и др.*
+
+> [!quote]- Кадр [00:07:21]
+> ![](frames/kf_0017.png)
+
+> [!quote]- Кадр [00:04:53]
+> ![](frames/kf_0012.png)
+
+## 4. Сканирование по битовой карте и work_mem
+
+Bitmap Index Scan — метод доступа, связанный с индексами: он спускается до листа и идёт по листу, но не идёт сразу в таблицы, а строит битовую карту ссылок на требуемые табличные строки в оперативной памяти (указывается только индекс, без имени таблицы). Время Index Scan пропорционально количеству строк, а Bitmap Index Scan — количеству страниц; Bitmap Heap Scan — второй этап, он не обращается к индексу, а использует битовую карту и по ней читает нужные версии строк в таблице, поэтому строки читаются только один раз. Сканирование по битовой карте удобно, когда данные в таблице неупорядочены или разрознены и одни и те же страницы читаются несколько раз; битовые карты можно объединять через BitmapAnd или BitmapOr, причём условия BitmapOr не обязательно должны быть по одному и тому же столбцу — можно использовать разные индексы. Пока размер карты не превышает work_mem, информация хранится с точностью до версии строки; work_mem — мягкий, а не жёсткий лимит, и при нехватке памяти часть карты огрубляется до отдельных страниц — это lossy-фрагменты, требующие перепроверки всех версий строк на странице (Rows Removed by Index Recheck). Строка Recheck Condition показывается всегда, даже если карта строилась без потери точности, а «Heap Blocks: exact» означает, что все фрагменты построены с точностью до строк и перепроверка не выполняется.
+
+```sql
+>= SELECT reads, hits, reuses
+FROM pg_stat_io
+WHERE context = 'bulkread' -- Сканирование больших таблиц
+AND object = 'relation'
+AND backend_type = 'client backend';
+
+EXPLAIN
+SELECT * FROM bookings WHERE total_amount < 5000;
+
+ Bitmap Heap Scan on bookings  (cost=94.57..9854.66 rows=4921 width=21)
+   Recheck Cond: (total_amount < '5000'::numeric)
+   ->  Bitmap Index Scan on bookings_total_amount_idx  (cost=0.00..93.34 rows=4921 width=0)
+         Index Cond: (total_amount < '5000'::numeric)
+
+EXPLAIN (costs off)
+SELECT * FROM bookings
+WHERE total_amount < 5000 OR total_amount > 500000;
+
+ Bitmap Heap Scan on bookings
+   Recheck Cond: ((total_amount < '5000'::numeric) OR (total_amount > '500000'::numeric))
+   ->  BitmapOr
+         ->  Bitmap Index Scan on bookings_total_amount_idx
+               Index Cond: (total_amount < '5000'::numeric)
+         ->  Bitmap Index Scan on bookings_total_amount_idx
+               Index Cond: (total_amount > '500000'::numeric)
+
+=> EXPLAIN (analyze, costs off, timing off)
+SELECT count(*) FROM bookings
+WHERE total_amount < '5000' AND book_date > $1;
+
+   -> Bitmap Heap Scan on bookings (actual rows=129 loops=1)
+      Rows Removed by Index Recheck: 89895
+      Heap Blocks: exact=811 lossy=568
+      -> BitmapAnd (actual rows=0 loops=1)
+         -> Bitmap Index Scan on bookings_total_amount_idx (actual rows=1471 loops=1)
+         -> Bitmap Index Scan on bookings_book_date_idx (actual rows=178142 loops=1)
+
+=> SET work_mem = '64kB';
+
+=> EXPLAIN (analyze, costs off, timing off)
+SELECT count(*) FROM bookings
+WHERE total_amount < 5000 AND book_date > $1;
+
+  ->  Bitmap Heap Scan on bookings (actual rows=129 loops=1)
+     Recheck Cond: ((total_amount < '5000'::numeric) AND (book_date > '2017-07-15 18:00:00+03'::timestamp with time zone))
+     Rows Removed by Index Recheck: 89895
+     Heap Blocks: exact=31 lossy=568
+     ->  BitmapAnd (actual rows=0 loops=1)
+           ->  Bitmap Index Scan on bookings_total_amount_idx
+           ->  Bitmap Index Scan on bookings_book_date_idx
+
+EXPLAIN (costs off)
+SELECT * FROM bookings
+WHERE total_amount < 5000
+  OR book_date = bookings.now() - INTERVAL '1 day';
+
+SET work_mem = '64kB';
+
+EXPLAIN (analyze, costs off, timing off)
+SELECT count(*) FROM bookings
+WHERE total_amount < 5000 AND book_date > $1;
+
+ Bitmap Heap Scan on bookings (actual rows=129 loops=1)
+   Recheck Cond: ((total_amount < '5000'::numeric) AND (book_date > '2017-07-15 18:00:00+03'::timestamp with time zone))
+   Rows Removed by Index Recheck: 89895
+   Heap Blocks: exact=31 lossy=568
+   ->  BitmapAnd (actual rows=0 loops=1)
+         ->  Bitmap Index Scan on bookings_total_amount_idx
+         ->  Bitmap Index Scan on bookings_book_date_idx
+
+EXPLAIN (costs off)
+SELECT * FROM bookings
+WHERE total_amount < 5000 OR total_amount > 500000;
+
+EXPLAIN (costs off)
+SELECT * FROM bookings
+WHERE total_amount < 5000
+  OR book_date = bookings.now() - INTERVAL '1 day';
+
+=> SET work_mem = '64kB';
+
+=> EXPLAIN (analyze, costs off, timing off)
+SELECT count(*) FROM bookings
+WHERE total_amount < 5000 AND book_date > $1;
+
+  ->  Bitmap Heap Scan on bookings (actual rows=129 loops=1)
+     Recheck Cond: ((total_amount < '5000'::numeric) AND (book_date > '2017-07-15 18:00:00+03'::timestamp with time zone))
+     Rows Removed by Index Recheck: 89895
+     Heap Blocks: exact=31 lossy=568
+```
+
+| Метод | Пропорционален |
+|---|---|
+| Index Scan | количеству строк |
+| Bitmap Index Scan | количеству страниц |
+
+| Фрагмент | Точность | Перепроверка |
+|---|---|---|
+| exact | до строк | не выполняется |
+| lossy | до страниц | нужна |
 
 > [!info] Зачем это нужно
-> Индекс нужен, чтобы находить данные в таблице быстрее и избежать полного чтения.
+> Чтобы не читать одну и ту же табличную страницу по нескольку раз.
 
-*Источник: [00:01:00]*
-
-
-## 3. Index Scan, Index-Only Scan и оптимизации
-
-Index Scan ищет по индексу, но данные читает из таблицы; возвращает данные в порядке индекса даже без ORDER BY, может несколько раз считывать одну и ту же табличную страницу и применим для поиска по диапазону. Index-Only Scan используется, когда в запросе задействованы все столбцы, включённые в индекс, и применяет карту видимости, где хранится информация о страницах, где все версии строк видны пользователям; но информации о видимости строк в индексе нет, поэтому даже если все нужные значения есть в индексе, всё равно нужно сходить в таблицу и перепроверить видимость. При поиске конкретного значения по первичному ключу BookRef используется Index Scan; может вернуться не более одной строки, что оптимально для уникального индекса, а Index Cond показывает условия поиска в индексе. При дополнительном условии данные из таблицы дополнительно фильтруются, а страницы могут читаться несколько раз. Запрос с перечислением значений из диапазона через IN возвращает тот же результат, что и запрос с диапазоном, но тратит в два раза больше; в 16-й версии поиск от корня выполняется для каждого из пяти значений, а в 17-й версии добавлена оптимизация, позволяющая не отходить от корня несколько раз, поэтому количество прочитанных страниц больше.
-
-*Источник: [00:01:00]*
+*Источник: [00:00:00], [00:30:19], [00:34:51], [00:40:17], [00:42:06], [00:44:36] и др.*
 
 
-## 4. Bitmap Scan и lossy-карта
 
-Bitmap Index Scan — первая операция сканирования по битовой карте: она спускается по индексу и в оперативной памяти (work_mem) строит битовую карту со ссылками на требуемые табличные строки, не обращаясь к таблице; затем Bitmap Heap Scan использует эту карту для чтения строк, выполняя точный поиск: сначала определяется страница, затем внутри страницы — место, где лежит нужная строка. При сканировании по битовой карте индекс не просматривается: в оперативной памяти есть битовая карта, по которой читаются нужные версии строк таблицы, и каждая из них читается только один раз; операция сканирования не может начаться, пока битовая карта не построена полностью, а её построение требует небольших дополнительных затрат. Bitmap Scan удобен, когда данные в таблице хранятся в неупорядоченном виде по нужному индексному условию: данные разрознены и одни и те же страницы читаются несколько раз; если данные физически отсортированы по ключу индекса, планировщик может предпочесть Index Scan. Условия не обязательно должны быть по одному и тому же столбцу — при наличии индексов по разным столбцам можно использовать разные индексы для построения объединённой битовой карты; например, планировщик строит одну карту для условия «меньше 5000» и вторую — для условия «больше 500 тысяч»; эффективность зависит от таблиц, индексов, частоты обновления карты и очистки таблицы вместе с обновлением карты видимости. При построении Bitmap Scan ограничение work_mem по умолчанию составляет 4 мегабайта, и этот лимит мягкий: даже при превышении битовая карта всё равно будет построена в оперативной памяти; если указатели на строки не помещаются, карта строится с потерей точности — запоминаются не конкретные версии строк, а ссылки на страницы, при чтении такой страницы все версии строк перепроверяются, и такая карта может использовать много оперативной памяти; при уменьшении work_mem с 4 МБ до 64 КБ появляются lossy-фрагменты — неточные ссылки с точностью до страниц, а строка Recheck Condition показывает перепроверку условий и отображается в плане всегда.
 
-| Index Scan | Bitmap Scan |
+
+> [!quote]- Кадр [01:14:13]
+> ![](frames/kf_0180.png)
+
+> [!quote]- Кадр [00:52:23]
+> ![](frames/kf_0126.png)
+
+> [!quote]- Кадр [00:52:45]
+> ![](frames/kf_0127.png)
+
+> [!quote]- Кадр [00:49:32]
+> ![](frames/kf_0118.png)
+
+> [!quote]- Кадр [00:46:56]
+> ![](frames/kf_0112.png)
+
+## 5. Устройство B-дерева
+
+B-дерево — сбалансированное сильно ветвистое дерево поиска, работающее только с сортируемыми типами данных; как индекс это вспомогательная структура во внешней памяти, сопоставляющая ключи и идентификаторы строк таблицы. Оно состоит из корня, внутренних страниц, листьев и табличных страниц; поиск идёт от корня по веткам к листовым страницам, где хранятся ссылки на табличные строки, а листовые страницы связаны между собой двунаправленным списком, поэтому результаты поиска автоматически выдаются отсортированными, и поиск можно вести как в прямом, так и в обратном порядке. Сбалансированность означает одинаковое количество уровней от корня до листовой страницы. Индекс на B-дереве поддерживает только сортируемые типы данных, а столбцы или выражения можно указывать только для сортируемых типов. По умолчанию null-значения записываются в конец индекса; при создании индекса можно указать NULLS LAST или NULLS FIRST.
+
+```
+Indexes:
+  "bookings_pkey" PRIMARY KEY, btree (book_ref)
+```
+
+*Источник: [00:00:20], [00:21:18], [00:24:47], [00:38:06]*
+
+> [!quote]- Кадр [00:21:18]
+> ![](frames/kf_0051.png)
+
+
+
+## 6. Индексы для ограничений целостности
+
+Для первичного и уникального ключа Postgres поддерживает уникальность только с помощью уникальных индексов, поэтому для таких ограничений целостности индексы типа B-дерева создаются обязательно. В таблице бронирования Bookings для столбца BookRef создан первичный ключ; ограничение PRIMARY KEY обеспечивается индексом bookings_pkey (btree) по полю book_ref.
+
+```javascript
+=> \d bookings
+
+         Table "bookings.bookings"
+ Column     |            Type             | Collation | Nullable | Default
+------------+-----------------------------+-----------+----------+---------
+ book_ref   | character(6)                |           | not null |
+ book_date  | timestamp with time zone    |           | not null |
+ total_amount | numeric(10,2)             |           | not null |
+Indexes:
+    "bookings_pkey" PRIMARY KEY, btree (book_ref)
+```
+
+> [!info] Зачем это нужно
+> Postgres поддерживает уникальность только с помощью уникальных индексов.
+
+*Источник: [00:21:18], [00:28:29], [00:30:19]*
+
+
+## 7. Include-индексы и Index Only Scan
+
+Include-индекс — это индекс, в который при создании можно добавить неключевые столбцы с помощью фразы INCLUDE; сначала указываются основные ключи индексирования. Неключевые столбцы не используются при поиске по индексу и не учитываются ограничением уникальности; в INCLUDE можно помещать столбцы, которые нельзя включить в обычный B-tree, например несортируемые типы данных: geometry, JSON, XML. Если вся необходимая информация содержится в самом индексе, то нет необходимости обращаться к таблице — за исключением проверки видимости; значения неключевых столбцов хранятся в индексной записи и возвращаются без обращения к таблице, и это называется Index Only Scan. Heap Fetches показывает, сколько версий строк было проверено с помощью таблицы: при актуальной карте видимости обращаться к таблице не требуется, поэтому Heap Fetches = 0, а после обновления строки значение становится 20.
+
+```sql
+=> CREATE UNIQUE INDEX ON tickets (ticket_no) INCLUDE (book_ref);
+CREATE INDEX
+
+EXPLAIN (analyze, costs off, timing off, summary off)
+SELECT total_amount FROM bookings
+WHERE total_amount > 200000;
+
+QUERY PLAN
+-------------------------------------------------------------
+Index Only Scan using bookings_total_amount_idx on bookings (actual rows=141535 loops=1)
+  Index Cond: (total_amount > '200000'::numeric)
+  Heap Fetches: 0
+(3 rows)
+
+EXPLAIN SELECT *
+   FROM ticket_flights
+   WHERE flight_id = 187662;
+                        QUERY PLAN
+---------------------------------------------------------------------------
+  Gather  (cost=1000.00..114678.36 rows=107 width=32)
+    Workers Planned: 2
+    ->  Parallel Seq Scan on ticket_flights  (cost=0.00..113667.66 rows=45 width=32)
+          Filter: (flight_id = 187662)
+(4 rows)
+
+EXPLAIN (analyze, costs off, timing off, summary off)
+SELECT total_amount FROM bookings
+WHERE total_amount > 200000;
+
+QUERY PLAN
+-------------------------------------------------------------
+Index Only Scan using bookings_total_amount_idx on bookings (actual rows=141535 loops=1)
+  Index Cond: (total_amount > '200000'::numeric)
+  Heap Fetches: 0
+(3 rows)
+
+EXPLAIN SELECT *
+   FROM ticket_flights
+   WHERE flight_id = 187662;
+                        QUERY PLAN
+---------------------------------------------------------------------------
+  Gather  (cost=1000.00..114678.36 rows=107 width=32)
+    Workers Planned: 2
+    ->  Parallel Seq Scan on ticket_flights  (cost=0.00..113667.66 rows=45 width=32)
+          Filter: (flight_id = 187662)
+(4 rows)
+
+EXPLAIN (analyze, costs off, timing off, summary off)
+SELECT total_amount FROM bookings
+WHERE total_amount > 200000;
+
+QUERY PLAN
+-------------------------------------------------------------
+Index Only Scan using bookings_total_amount_idx on bookings (actual rows=141535 loops=1)
+  Index Cond: (total_amount > '200000'::numeric)
+Heap Fetches: 0
+(3 rows)
+```
+
+> [!info] Зачем это нужно
+> Если вся необходимая информация содержится в самом индексе, обращаться к таблице не нужно — кроме проверки видимости.
+
+*Источник: [00:59:54], [01:01:24], [01:06:24], [01:07:04], [01:09:21], [01:09:41] и др.*
+
+> [!quote]- Кадр [01:07:04]
+> ![](frames/kf_0163.png)
+
+## 8. Мёртвые версии строк и VACUUM
+
+Создаётся копия таблицы flights с отключённым автовакуумом, чтобы он автоматически не обрабатывал таблицу; таблица заполняется всеми строками из flights. EXPLAIN ANALYZE для count(*) показывает последовательное сканирование, которому нужно прочитать все 2624 страницы таблицы. Команда VACUUM помечает место, занятое мёртвыми версиями строк, как свободное для повторного использования, а если в конце файла есть страницы только с мёртвыми строками, возвращает это место операционной системе; карта видимости хранит информацию о страницах, на которых все версии строк видны пользователям, и обновляется операцией VACUUM. После удаления всех строк командой DELETE размер таблицы остаётся прежним, потому что мёртвые версии строк остаются в файле до очистки; после VACUUM размер уменьшается — в примере таблица стала занимать 16 kB вместо 21 MB и в ней остаётся две страницы. Команда ANALYZE собирает статистику.
+
+```sql
+CREATE TABLE flights_copy
+   WITH (autovacuum_enabled = false)
+AS SELECT * FROM flights;
+
+VACUUM flights_copy;
+
+=> CREATE TABLE flights_copy
+   WITH (autovacuum_enabled = false)
+   AS SELECT * FROM flights;
+
+SELECT 214867
+
+=> SELECT pg_size_pretty(pg_total_relation_size('flights_copy'));
+
+ pg_size_pretty
+----------------
+ 21 MB
+(1 row)
+
+=> DELETE FROM flights_copy;
+
+DELETE 214867
+
+=> SELECT pg_size_pretty(pg_total_relation_size('flights_copy'));
+
+ pg_size_pretty
+----------------
+ 21 MB
+(1 row)
+
+=> VACUUM flights_copy;
+VACUUM
+=> SELECT pg_size_pretty(pg_total_relation_size('flights_copy'));
+ pg_size_pretty
+----------------
+ 16 kB
+(1 row)
+
+>= VACUUM ANALYZE bookings;
+```
+
+*Источник: [00:02:05], [00:10:31], [00:11:22], [00:11:42], [00:12:02], [00:12:22] и др.*
+
+> [!quote]- Кадр [00:02:05]
+> ![](frames/kf_0005.png)
+
+## 9. Буферный кэш и pg_stat_io
+
+Postgres при чтении данных записывает их в буферный кэш и работает с ними там, и при последовательном сканировании в плане EXPLAIN (analyze, buffers) отображается Buffers: shared hit=2; при первом выполнении запроса кеш заполняется, а при повторном данные читаются из кеша — небольшие таблицы, такие как flights, помещаются в кеш. При чтении таблицы, размер которой больше четверти shared_buffers, PostgreSQL выполняет Seq Scan, страницы загружаются в буферный кэш с вытеснением, а в pg_stat_io столбец reuses показывает, сколько страниц было вытеснено. Для сканирования больших таблиц PostgreSQL использует буферное кольцо размером 32 страницы: как только 32 страницы заполнены, чтение идёт по кругу — предыдущие страницы вылетают из кэша, а на их место зачитываются новые, пока не прочитается вся таблица. Страницы в буферном кольце могут изменяться другими процессами: они помечаются как грязные и выпадают из кольца, затем идёт запись на диск и последующее чтение на общих основаниях. Статистику ввода-вывода показывает представление pg_stat_io с накопленной статистикой для всех клиентских процессов; перед началом сбора её сбрасывают функцией pg_stat_reset_shared('io').
+
+```sql
+Planning:
+   Buffers: shared hit=2
+
+=> SELECT reads, hits, reuses
+FROM pg_stat_io
+WHERE context = 'bulkread'
+AND object = 'relation'
+AND backend_type = 'client backend';
+
+reads | hits | reuses
+-------+------+--------
+ 49415 |    0 | 49383
+
+>> EXECUTE EXPLAIN (buffers, analyze, costs off)
+SELECT * FROM tickets;
+
+               QUERY PLAN
+---------------------------------------------------------------------------
+Seq Scan on tickets (actual time=0.692..642.226 rows=2949857 loops=1)
+  Buffers: shared read=49415
+
+> SELECT pg_stat_reset_shared('io');
+pg_stat_reset_shared
+---------------------
+(1 row)
+```
+
+reads | hits | reuses
+-------+------+--------
+ 49415 |    0 | 49383
+
+*Источник: [00:13:45], [00:14:05], [00:15:03], [00:17:12], [00:17:32], [00:17:52] и др.*
+
+> [!quote]- Кадр [00:14:05]
+> ![](frames/kf_0034.png)
+
+> [!quote]- Кадр [01:15:03]
+> ![](frames/kf_0182.png)
+
+## 10. Команда CLUSTER
+
+Команда CLUSTER позволяет переупорядочить данные в таблице, перестраивая таблицу так, чтобы данные были физически упорядочены по указанному индексу. CLUSTER переписывает все строки таблицы в новые файлы, физически сортируя их по указанному индексу, и накладывает те же ограничения, что и VACUUM FULL: может занять время и накладывает эксклюзивную блокировку на всю таблицу. После кластеризации данные упорядочены по индексу, и планировщик заменяет сканирование по битовой карте на обычное индексное сканирование, считая его выгоднее. Со временем при слишком частых изменениях таблицы упорядоченность по total_amount деградирует.
+
+```sql
+>= CLUSTER bookings USING bookings_total_amount_idx;
+
+=> EXPLAIN (costs off)
+SELECT * FROM bookings
+WHERE total_amount < 5000;
+
+Index Scan using bookings_total_amount_idx on bookings
+  Index Cond: (total_amount < '5000'::numeric)
+```
+
+| Ситуация | План |
 |---|---|
-| Читает таблицу по ссылкам из листовой страницы, может читать одну страницу несколько раз | Строит битовую карту по индексу, затем читает таблицу по ней |
-| Предпочтителен, если данные физически отсортированы по ключу индекса | Удобен, когда данные разрознены и одни и те же страницы читаются несколько раз |
+| Данные неупорядочены, страницы читаются несколько раз | сканирование по битовой карте |
+| Таблица кластеризована | обычное индексное сканирование |
 
-*Источник: [00:01:00]*
+> [!info] Зачем это нужно
+> После кластеризации проще и выгодней сделать обычное индексное сканирование.
 
-
-## 5. Буферный кэш и буферные кольца
-
-Любая работа в Postgres с данными ведётся именно через буферный кэш: страницы всегда считываются в буферный кэш, и только там Postgres начинает с ними работать. При чтении большой таблицы из буферного кэша могут вытесниться все полезные данные. Если нужно прочитать больше 1/4 размера буферного кэша, для операции последовательного чтения создаётся специальное буферное кольцо; при последовательном сканировании чтение идёт через буферное кольцо размером 32 страницы, которое используется при сканировании больших таблиц. Если другой процесс выполняет последовательное чтение той же таблицы, он присоединяется к тому же буферному кольцу и читает те данные, которые первый процесс уже успел прочитать. Если странички в кольце изменяются, они помечаются как грязные: грязные странички выпадают из буферного кольца, после чего записываются на диск и читаются на общих основаниях.
-
-*Источник: [00:01:00]*
-
-
-## 6. Стоимость плана и параметры
-
-Стоимость запроса для Seq Scan представлена тремя группами значений: cost из двух значений, rows — оценка планировщиком количества возвращаемых строк и оценка средней ширины строки в байтах. Стоимость складывается из компонента ввода-вывода и компонента затрат процессора; компонент ввода-вывода — это seq_page_cost, умноженный на количество страниц таблицы, а количество страниц можно получить из pg_class; параметр cpu_tuple_cost по умолчанию равен 0,01 и складывается с другими составляющими в общую стоимость. Планировщик вычисляет общую оценку стоимости плана с помощью алгоритмов, учитывающих настройки сервера и статистику; учитываются операции ввода-вывода — необходимость прочитать определённое количество страниц, стоимость чтения одной страницы равна единице, а общая оценка ввода-вывода берётся из числа страниц в таблице. Вторая компонента — оценка процессорных ресурсов на обработку каждой строки, она записывается в параметре cpu_tuple_cost. Начальная стоимость — это стоимость, которую нужно заплатить, чтобы начать обрабатывать первую строку этим узлом; для последовательного сканирования она нулевая, а стоимость чтения одной индексной страницы определяется параметром random_page_cost: по умолчанию он равен 4, то есть случайный доступ считается в 4 раза медленнее последовательного, и это значение больше seq_page_cost; для современных дисков это значение стоит существенно уменьшить.
-
-*Источник: [00:01:00]*
-
-
-## 7. Vacuum, VACUUM FULL и CLUSTER
-
-В Postgres данные после удаления или изменения остаются в таблице: команда Delete помечает строки как мёртвые, но физический размер файлов не уменьшается. Специальный процесс «Вакуум» помечает освободившиеся места как свободные, а если в конце файла есть страницы только с мёртвыми строками, это место возвращается операционной системе; пока vacuum не сработал, мёртвые строки остаются в таблице, и такие неактуальные версии строк не нужно показывать пользователю. Своевременная очистка таблицы важна: если её не делать, запросы, сканирующие таблицу, будут читать лишнюю информацию, расходуя ресурсы на ввод-вывод и на процесс; чем больше мёртвых строк занимают место, тем больше лишнего чтения выполняет последовательное сканирование. В листовой странице индекса может оказаться несколько ссылок на табличные страницы — как на мёртвую строку, так и на нормальную; значение из мёртвой строки возвращать нельзя, возвращается только нормальная строка. VACUUM FULL создаёт новые файлы и переписывает в них только живые строки таблицы, а команда CLUSTER переупорядочивает данные таблицы, перестраивая её: строки записываются в новые файлы, физически отсортированными по указанному индексу; CLUSTER накладывает эксклюзивную блокировку на таблицу и может занять время; после выполнения CLUSTER упорядоченность автоматически не поддерживается, дальнейшие изменения приводят к появлению мёртвых строк, вставке данных в произвольные места, и со временем упорядоченность деградирует.
-
-| Аспект | CLUSTER | VACUUM FULL |
-|---|---|---|
-| Что делает | перестраивает таблицу, записывая строки в новые файлы | создаёт новые файлы и переписывает только живые строки |
-| Порядок строк | физически отсортированы по указанному индексу | — |
-
-*Источник: [00:01:00]*
-
-
-## 8. ANALYZE и карта видимости
-
-После команды ANALYZE планировщик Postgres понимает, что данные упорядочены по столбцу. Для запроса по этому столбцу с условиями в плане запроса уже не видно сканирования по битовой карте (Bitmap Scan). Для каждой таблицы есть специальный файл — карта видимости, который обновляется операцией вакуум очистки; по карте видимости отсеиваются страницы, где все строки видимы, и в такие страницы не нужно заходить, это выгоднее, чем ходить во все странички.
-
-*Источник: [00:01:00]*
-
-
-## 9. Многоколоночные и покрывающие индексы
-
-Если в условии запроса указан только второй столбец многоколоночного индекса, Postgres не может использовать этот индекс для поиска; в 16-й версии это невозможно, и до версии 18 такой индекс для таких запросов не применяется. Для индекса по двум столбцам (Ticket, FlightID) Index Scan используется, если в условии указаны оба столбца или только первый, а если указан только второй (FlightID) — используется Seq Scan. В 18-й версии появится оптимизация: при условии не по ведущему столбцу многоколоночного индекса индекс можно просканировать несколько раз, если количество значений первого столбца невелико (например, от 1 до 3). Покрывающие или include-индексы — это индексы, в которые при создании можно добавлять дополнительные столбцы: фраза INCLUDE позволяет добавить в индекс неключевые столбцы, которые не используются при поиске по индексу и для ограничений уникальности, чтобы избежать обращения к таблице при выборке таких столбцов по ключу, например для получения наименования по идентификатору. В include можно поместить столбцы с любым типом, в том числе несортируемые (геометрия, JSON, XML), которые в обычный B+ дерево (B+ дерево) индекс включить нельзя; тогда index-only scan сможет использовать и возвращать эти данные любых типов, работая изначально с индексом B+ дерево.
-
-*Источник: [00:01:00]*
-
-
-## 10. Селективность и точки S1, S2
-
-Селективность 1 означает отсутствие селективности: нужно все строки таблицы; малые значения (близкие к 0) означают высокую селективность, то есть нужно выбрать мало записей. Index Scan максимально эффективен при высокой селективности до условной точки S1, дальше он перестаёт быть эффективным, так как приходится сканировать одни и те же табличные строки по нескольку раз. После точки S1 побеждает метод сканирования по битовой карте, а после точки S2 выгоднее Seq Scan; точки S1 и S2 зависят от таблицы и конкретных индексов.
-
-*Источник: [00:01:00]*
-
-
-## 11. Диагностика: EXPLAIN ANALYZE и pg_stat_io
-
-EXPLAIN ANALYZE выполняет запрос, тогда как команда EXPLAIN без ANALYZE не подтверждает факт выполнения запроса и показывает, какой метод доступа планировщик собирается использовать; опция analyze говорит о том, что запрос реально выполняется, а не просто строится его план. Чтобы получить точную статистику, нужно указать ANALYZE. Посмотреть статистику ввода-вывода можно в представлении pg_stat_io, для чистоты эксперимента её сбрасывают специальной функцией; чтобы статистика правильно показывала данные, нужно убедиться, что в системе больше никто не работает. pg_stat_io показывает статистику для всех клиентских процессов, а не только для того, который выполнял команду Explain; балк-рит — это операции сканирования больших таблиц, а столбец Reuses показывает, сколько страниц было вытеснено: вычитание 49 383 из 49 415 даёт 32 и указывает на то, что таблица читалась с вытеснением; после чтения таблицы страницы остаются в буферном кэше, что видно по счётчику hit. В 18-й версии Postgres будет возможность получать статистику ввода-вывода не на уровне всей системы, а для отдельных клиентских процессов: функция pg.getbackend.io принимает идентификатор процесса и показывает статистику ввода-вывода именно для этого клиентского процесса.
-
-*Источник: [00:01:00]*
+*Источник: [00:52:45], [00:53:50], [00:55:41], [00:59:04], [00:59:54]*
 
 
 ## Схема
 
 ```mermaid
 flowchart TD
-    n1["1. Методы доступа и Seq Scan"]
-    n2["2. Устройство индекса и B-дерево"]
-    n3["3. Index Scan, Index-Only Scan и оптимизации"]
-    n4["4. Bitmap Scan и lossy-карта"]
-    n8["8. ANALYZE и карта видимости"]
-    n10["10. Селективность и точки S1, S2"]
-    n2 -->|основа для: устройство B-дерева и путь поиска ле…| n3
-    n3 -->|сравни с: Index Scan и Bitmap Scan — альтернатив…| n4
-    n8 -->|основа для: карта видимости используется в Index…| n3
-    n10 -->|причина: селективность условий определяет выбор …| n1
+    n1["1. Методы доступа: Seq Scan и Index Scan"]
+    n2["2. Диапазонный поиск, IN и Index Scan Backward"]
+    n3["3. EXPLAIN и оценка стоимости планировщиком"]
+    n4["4. Сканирование по битовой карте и work_mem"]
+    n5["5. Устройство B-дерева"]
+    n6["6. Индексы для ограничений целостности"]
+    n7["7. Include-индексы и Index Only Scan"]
+    n8["8. Мёртвые версии строк и VACUUM"]
+    n9["9. Буферный кэш и pg_stat_io"]
+    n10["10. Команда CLUSTER"]
+    n1 --> n2
+    n2 --> n3
+    n3 --> n4
+    n4 --> n5
+    n5 --> n6
+    n6 --> n7
+    n7 --> n8
+    n8 --> n9
+    n9 --> n10
 ```
 
 ## Итог
 
 > [!success] Что в итоге
-> Postgres достучится до табличных данных либо через индекс, либо последовательным сканированием страниц, а планировщик выбирает между Seq Scan, Index Scan, Index-Only Scan и Bitmap Scan по оценке стоимости, на которую влияют ввод-вывод, затраты процессора и параметры вроде random_page_cost. Bitmap Scan строит битовую карту в оперативной памяти с мягким лимитом work_mem, и при нехватке памяти карта становится lossy, из-за чего условия перепроверяются (Recheck Condition). На лишнее чтение влияют мёртвые строки, поэтому важны Vacuum и VACUUM FULL, а упорядоченность данных связана с CLUSTER и ANALYZE; в выборе метода также важны селективность с точками S1 и S2, ограничения многоколоночных индексов и покрывающие (include) индексы. Проверять поведение запросов и ввод-вывод помогают EXPLAIN ANALYZE и статистика в pg_stat_io, в PG 18 — по отдельным процессам.
+> Метод доступа в PostgreSQL выбирается между последовательным сканированием, сканированием индекса, сканированием только индекса и сканированием по битовой карте, и выбор зависит от модели стоимости, в том числе random_page_cost. Индексы на B-дереве работают только с сортируемыми типами и обязательны для первичного и уникального ключей; Include-индексы позволяют выполнять Index Only Scan с Heap Fetches = 0. DELETE не уменьшает размер таблицы — мёртвые версии строк удаляются только командой VACUUM, а при чтении больших таблиц shared_buffers использует буферное кольцо из 32 страниц. Команда CLUSTER делает данные физически упорядоченными по индексу, после чего планировщик может предпочесть обычное индексное сканирование вместо сканирования по битовой карте.
 

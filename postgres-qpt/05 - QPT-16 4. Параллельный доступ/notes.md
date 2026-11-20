@@ -1,108 +1,613 @@
 ---
 type: lecture
 source: "https://rutube.ru/video/030afe08ebdf5bc86dca0873f25bcb36/"
-created: 2026-11-17
+created: 2026-11-19
 tags:
   - course/postgres-qpt
 up: "[[index]]"
 ---
 
-# Параллельные планы в PostgreSQL
+# Параллельные запросы в PostgreSQL: процессы, стоимость и методы доступа
 
 > [!abstract] Обзор
-> Материал описывает параллельные планы в PostgreSQL: роль ведущего и рабочих процессов, узел Gather и разделение параллельной и последовательной частей плана. Разобраны параметры, влияющие на число рабочих процессов: MaxWorkerProcesses, MaxParallelWorkers, Parallel Workers и Parallel Leader Participation. Показаны пороги построения плана (min_parallel_table_scan_size, min_parallel_index_scan_size) и стоимость параллельного выполнения, включая Parallel Setup Cost и стоимость частичной агрегации. Отдельно рассмотрены параллельный скан, параллельное индексное сканирование и Bitmap Heap Scan, а также объекты и запросы, которые не распараллеливаются, включая временные таблицы. Показано, что последовательный план в выводе планировщика означает лишь меньшую стоимость, а не невозможность параллелизма.
+> Материал о параллельном выполнении запросов в PostgreSQL: как устроены параллельные планы и как они отражаются в EXPLAIN. Разбираются роли ведущего и рабочих процессов, общий пул рабочих процессов и параметры max_worker_processes, max_parallel_workers, max_parallel_workers_per_gather и parallel_workers, а также формула расчёта числа процессов. Показаны узлы Parallel Seq Scan, Partial Aggregate, Gather и Finalize Aggregate, Parallel Index Scan, Parallel Index Only Scan и Parallel Bitmap Heap Scan. Отдельно рассматривается оценка стоимости через cpu_operator_cost, cpu_tuple_cost, parallel_setup_cost с делением процессорной части на 2.4 и индексного доступа делением на 4. Описаны случаи, когда план остаётся последовательным, и операции, которые не распараллеливаются, а также вспомогательная настройка debug_parallel_query.
 
 > [!info] Курс
 > [[index|Оглавление курса]]
 
 ## Оглавление
-1. [[#1. Ведущий, рабочие процессы и параметры]]
-2. [[#2. Узел Gather и Finalize Aggregate]]
-3. [[#3. Параллельный скан]]
-4. [[#4. Стоимость и пороги параллельного плана]]
-5. [[#5. Последовательный план и отключение параллелизма]]
-6. [[#6. Что не распараллеливается]]
-7. [[#7. Параллельное индексное сканирование и Bitmap Heap Scan]]
-8. [[#8. Отладка debug-parallel-query]]
+1. [[#1. Структура параллельного плана и агрегации]]
+2. [[#2. Пул рабочих процессов, лимиты и формула]]
+3. [[#3. Параллельные методы доступа и их стоимость]]
+4. [[#4. Последовательный план и нераспараллеливаемые операции]]
 
 **Схема** — [[#Схема]]
 **Итог** — [[#Итог]]
 
-## 1. Ведущий, рабочие процессы и параметры
+## 1. Структура параллельного плана и агрегации
 
-Запрос начинает ведущий процесс: он выполняет последовательную часть плана, запускает рабочие процессы, которые одновременно работают над параллельной частью плана, и получает от них данные; каждый процесс сканирует свою часть таблицы и получает частичный агрегат по просканированным им данным, а планировщик может счесть, что для большой таблицы Bookings лучше использовать параллельный план. Количество рабочих процессов для одного узла не может превышать MaxParallelWorkers, по умолчанию — 2, поэтому при двух рабочих над параллельной частью работают три процесса; фактически запускается не больше MaxParallelWorkersPerGather, и рабочих может быть меньше расчётного. MaxWorkerProcesses настраивает общее количество рабочих процессов, по умолчанию — 8; общее число таких процессов в системе не должно превышать это значение, и они нужны не только для параллельных запросов, но и, например, для логической репликации. MaxParallelWorkers можно настраивать, в том числе так, чтобы он был на несколько меньше MaxWorkerProcesses, если есть дополнительные задачи для рабочих процессов. Параметр хранения Parallel Workers позволяет явно зафиксировать количество рабочих процессов для параллельной части плана запросов к конкретной таблице, например для Bookings можно задать 4 рабочих процесса; по умолчанию ведущий участвует в выполнении параллельного плана, за это отвечает параметр участия ведущего (Parallel Leader Participation), который включён по умолчанию.
+Ведущий процесс выполняет последовательную часть параллельного плана, запускает рабочие процессы и получает от них данные; при наличии свободного времени он может выполнять часть работы рабочих процессов. Рабочие процессы одновременно работают над параллельной частью плана, обрабатывают свою часть и передают результаты ведущему; они предназначены не только для параллельного выполнения запросов, но и для других задач. Узел Gather собирает результаты от рабочих процессов, после чего ведущий продолжает последовательный план: всё, что находится ниже узла Gather, — параллельная часть, а Gather и узлы выше выполняются только в ведущем процессе. При параллельном выполнении агрегации план включает Finalize Aggregate, Gather, Partial Aggregate и Parallel Seq Scan: каждый рабочий процесс получает частичный агрегат, результаты пересылаются в Gather, а Finalize Aggregate объединяет их в итоговый результат. Поля Workers Planned и Workers Launched показывают запланированное и реально запущенное число рабочих процессов; EXPLAIN без ANALYZE показывает только план и не выполняет запрос, а с ANALYZE запрос выполняется и видно реальное число воркеров.
 
-*Источник: [00:00:00], [00:01:00]*
+```sql
+>= EXPLAIN
+SELECT count(*) FROM bookings;
 
-> [!quote]- Кадр [00:01:00]
-> ![](frames/kf_0001.png)
+QUERY PLAN
+Finalize Aggregate  (cost=25442.58..25442.59 rows=1 width=8)
+  ->  Gather  (cost=25442.36..25442.57 rows=2 width=8)
+        Workers Planned: 2
+        ->  Partial Aggregate  (cost=24442.36..24442.37 rows=1 width=8)
+              ->  Parallel Seq Scan on bookings  (cost=0.00..22243.29 rows=879629 width=0)
+(5 rows)
 
-## 2. Узел Gather и Finalize Aggregate
+=> SELECT round(
+    (
+        reltuples * current_setting('cpu_operator_cost')::real / 2.4
+    )::numeric,
+    2
+  ) AS "cost"
+FROM pg_class WHERE relname = 'bookings';
+cost
+-------
+2199.07
+(1 row)
 
-В параллельном плане узел Gather показывает границу: всё, что ниже него, — параллельная часть плана. Количество частичных агрегатов равно количеству процессов, работавших над параллельной частью; результаты частичных агрегатов пересылаются ведущему процессу в узел Gather, где собирается финальный агрегат. В параллельном плане частичный агрегат вычисляется внутри каждого рабочего процесса; Gather получает данные обратно от рабочих, а Finalize Aggregate берёт результаты предыдущего узла (например, три строки) и складывает их. После Gather ведущий процесс продолжает выполнение последовательного плана; последовательный план подключается, если нет другой работы, а стоимость Gather и Finalize Aggregate практически не отличается.
+EXPLAIN (analyze, costs off)
+SELECT count(*) FROM bookings;
 
-*Источник: [00:01:00]*
+Finalize Aggregate
+  -> Gather
+        Workers Planned: 2
+        Workers Launched: 2
+        -> Partial Aggregate
+              -> Parallel Seq Scan on bookings
+
+=> EXPLAIN (analyze, costs off)
+SELECT count(*) FROM flights;
+ QUERY PLAN
+----------------------------------------------------------------
+ Finalize Aggregate (actual time=63.755..63.792 rows=1 loops=1)
+   ->  Gather (actual time=63.748..63.787 rows=2 loops=1)
+         Workers Planned: 1
+         Workers Launched: 1
+         ->  Partial Aggregate (actual time=47.530..47.530 rows=1 loops=2)
+               ->  Parallel Seq Scan on flights (actual time=0.398..43.553 rows=107434 loops=2)
+
+>= EXPLAIN
+SELECT count(*) FROM bookings;
+
+QUERY PLAN
+Finalize Aggregate  (cost=25442.58..25442.59 rows=1 width=8)
+  ->  Gather  (cost=25442.36..25442.57 rows=2 width=8)
+        Workers Planned: 2
+        ->  Partial Aggregate  (cost=24442.36..24442.37 rows=1 width=8)
+              ->  Parallel Seq Scan on bookings  (cost=0.00..22243.29 rows=879629 width=0)
+(5 rows)
+
+=> SELECT round(
+    (
+        reltuples * current_setting('cpu_operator_cost')::real / 2.4
+    )::numeric,
+    2
+  ) AS "cost"
+FROM pg_class WHERE relname = 'bookings';
+cost
+-------
+2199.07
+(1 row)
+
+=> SELECT current_setting('parallel_setup_cost') parallel_setup_cost,
+current_setting('parallel_tuple_cost') parallel_tuple_cost;
+
+=> EXPLAIN
+SELECT count(*) FROM bookings;
+
+QUERY PLAN
+Finalize Aggregate  (cost=25442.58..25442.59 rows=1 width=8)
+  ->  Gather  (cost=25442.36..25442.57 rows=2 width=8)
+        Workers Planned: 2
+        ->  Partial Aggregate  (cost=24442.36..24442.37 rows=1 width=8)
+              ->  Parallel Seq Scan on bookings  (cost=0.00..22243.29 rows=879629 width=0)
+(5 rows)
+
+=> SELECT round(
+    (
+        reltuples * current_setting('cpu_operator_cost')::real / 2.4
+    )::numeric,
+    2
+  ) AS "cost"
+FROM pg_class WHERE relname = 'bookings';
+cost
+-------
+2199.07
+(1 row)
+
+=> SELECT current_setting('parallel_setup_cost') parallel_setup_cost,
+current_setting('parallel_tuple_cost') parallel_tuple_cost;
+
+EXPLAIN (analyze, costs off)
+SELECT count(*) FROM bookings;
+
+Finalize Aggregate
+  -> Gather
+        Workers Planned: 2
+        Workers Launched: 2
+        -> Partial Aggregate
+              -> Parallel Seq Scan on bookings
+
+=> EXPLAIN (analyze, costs off)
+SELECT count(*) FROM flights;
+ QUERY PLAN
+----------------------------------------------------------------
+ Finalize Aggregate (actual time=63.755..63.792 rows=1 loops=1)
+   ->  Gather (actual time=63.748..63.787 rows=2 loops=1)
+         Workers Planned: 1
+         Workers Launched: 1
+         ->  Partial Aggregate (actual time=47.530..47.530 rows=1 loops=2)
+               ->  Parallel Seq Scan on flights (actual time=0.398..43.553 rows=107434 loops=2)
+
+=> EXPLAIN
+   SELECT count(*) FROM bookings;
+
+                          QUERY PLAN
+------------------------------------------------------------
+ Finalize Aggregate  (cost=25442.58..25442.59 rows=1 width=8)
+   ->  Gather  (cost=25442.36..25442.57 rows=2 width=8)
+         Workers Planned: 2
+         ->  Partial Aggregate  (cost=24442.36..24442.37 rows=1 width=8)
+               ->  Parallel Seq Scan on bookings  (cost=0.00..22243.29 rows=879629 width=0)
+(5 rows)
+
+SELECT count(*) FROM bookings;
+
+QUERY PLAN
+-----------------------------------------------------------
+ Finalize Aggregate  (cost=25442.58..25442.59 rows=1 width=8)
+   ->  Gather  (cost=25442.36..25442.57 rows=2 width=8)
+         Workers Planned: 2
+         ->  Partial Aggregate  (cost=24442.36..24442.37 rows=1 width=8)
+               ->  Parallel Seq Scan on bookings  (cost=0.00..22243.29 rows=879629 width=0)
+(5 rows)
+
+=> SELECT reltuples, current_setting('cpu_operator_cost'),
+       reltuples * current_setting('cpu_operator_cost')::real AS total
+FROM pg_class WHERE relname = 'seats';
+
+ reltuples | current_setting | total
+-----------+-----------------+--------
+      1339 | 0.0025          | 3.3474998
+
+=> SELECT round(
+       ( relpages * current_setting('seq_page_cost')::real +
+         reltuples * current_setting('cpu_tuple_cost')::real / 2.4
+       )::numeric,
+       2
+  ) AS "cost"
+FROM pg_class WHERE relname = 'bookings';
+ cost
+------
+22243.29
+(1 row)
+
+=> SELECT round(
+    (
+        relpages * current_setting('seq_page_cost')::real +
+        reltuples * current_setting('cpu_tuple_cost')::real / 2.4
+    )::numeric,
+    2
+  ) AS "cost"
+  FROM pg_class WHERE relname = 'bookings';
+
+=> SELECT current_setting('parallel_setup_cost') parallel_setup_cost,
+  current_setting('parallel_tuple_cost') parallel_tuple_cost;
+ parallel_setup_cost | parallel_tuple_cost
+---------------------+--------------------
+          1000       | 0.1
+(1 row)
+
+=> SHOW parallel_leader_participation;
+parallel_leader_participation
+------------------------------
+on
+(1 row)
+=> SET parallel_leader_participation = off;
+SET
+
+=> ALTER TABLE bookings SET (parallel_workers = 4);
+
+ALTER TABLE
+=> EXPLAIN (analyze, costs off)
+SELECT count(*) FROM bookings;
+
+                    QUERY PLAN
+------------------------------------------------------------
+  Finalize Aggregate (actual time=251.354..251.482 rows=1 loops=1)
+    ->  Gather (actual time=230.057..251.392 rows=5 loops=1)
+          Workers Planned: 4
+          Workers Launched: 4
+          ->  Partial Aggregate (actual time=216.437..216.439 rows=1 loops=5)
+                ->  Parallel Seq Scan on bookings (actual time=0.027..169.144 rows=422222 loops=5)
+
+=> SELECT round(reltuples / 2.4) "rows"
+  FROM pg_class WHERE relname = 'bookings';
+```
+
+| Поле | Что показывает |
+| Workers Planned | запланированное число рабочих процессов |
+| Workers Launched | реально запущенное число рабочих процессов |
+
+*Источник: [00:00:47], [00:02:44], [00:05:50], [00:09:32], [00:12:28], [00:15:14] и др.*
+
+> [!quote]- Кадр [00:00:47]
+> ![](frames/kf_0002.png)
+
+> [!quote]- Кадр [00:12:28]
+> ![](frames/kf_0029.png)
+
+> [!quote]- Кадр [00:05:50]
+> ![](frames/kf_0013.png)
+
+## 2. Пул рабочих процессов, лимиты и формула
+
+max_worker_processes по умолчанию равен 8 и задаёт максимальное количество рабочих процессов, которые одновременно могут работать в системе; они используются для параллельного выполнения запросов, логической репликации и расширениями, и их общее количество не должно превышать этот параметр. max_parallel_workers по умолчанию равен 8 и ограничивает число процессов для параллельных запросов; его можно настроить меньше max_worker_processes, чтобы оставить процессы для других задач. Число рабочих процессов для одного узла ограничено max_parallel_workers_per_gather (по умолчанию 2); параметр хранения parallel_workers на таблице задаёт количество параллельных процессов для параллельной части плана, а если установить его в 0, планировщик всегда выберет последовательное сканирование. Если таблица больше min_parallel_table_scan_size (по умолчанию 8 МБ) и parallel_workers не задан, число процессов вычисляется по формуле 1 + ⌊log₃(размер таблицы / min_parallel_table_scan_size)⌋; для выборки — 1 + ⌊log₃(размер выборки / min_parallel_index_scan_size)⌋, но не больше max_parallel_workers_per_gather, а если размер меньше min_parallel_index_scan_size (512 kB), процессов ноль. Параметр parallel_leader_participation (по умолчанию on) определяет, участвует ли ведущий процесс в параллельной части; при двух рабочих процессах ведущий берёт на себя 0,4 (40% от доли рабочих), а при отключении работа делится только между рабочими процессами. Параметр debug_parallel_query служит только для отладки: он заставляет планировщик использовать параллельные планы, даже если они невыгодны, и всегда планирует только один процесс (один воркер).
+
+```sql
+ALTER TABLE bookings SET (parallel_workers = 4);
+
+=> EXPLAIN (analyze, costs off)
+SELECT count(*) FROM bookings;
+
+                    QUERY PLAN
+------------------------------------------------------------
+  Finalize Aggregate (actual time=251.354..251.482 rows=1 loops=1)
+    ->  Gather (actual time=230.057..251.392 rows=5 loops=1)
+          Workers Planned: 4
+          Workers Launched: 4
+          ->  Partial Aggregate (actual time=216.437..216.439 rows=1 loops=5)
+                ->  Parallel Seq Scan on bookings (actual time=0.027..169.144 rows=422222 loops=5)
+
+SET debug_parallel_query = on;
+
+=> EXPLAIN (costs off)
+SELECT * FROM bookings;
+
+         QUERY PLAN
+-----------------------------
+ Gather
+   Workers Planned: 1
+   Single Copy: true
+   ->  Seq Scan on bookings
+(4 rows)
+
+=> RESET debug_parallel_query;
+
+=> SHOW min_parallel_table_scan_size;
+ min_parallel_table_scan_size
+----------------------------
+ 8MB
+
+=> SHOW parallel_leader_participation;
+parallel_leader_participation
+------------------------------
+on
+(1 row)
+=> SET parallel_leader_participation = off;
+SET
+
+SELECT round(reltuples / 2.4) "rows"
+  FROM pg_class WHERE relname = 'bookings';
+
+ALTER TABLE bookings SET (parallel_workers = 4);
+
+>= ALTER TABLE bookings SET (parallel_workers = 4);
+
+ALTER TABLE
+=> EXPLAIN (analyze, costs off)
+SELECT count(*) FROM bookings;
+
+                    QUERY PLAN
+------------------------------------------------------------
+  Finalize Aggregate (actual time=251.354..251.482 rows=1 loops=1)
+    ->  Gather (actual time=230.057..251.392 rows=5 loops=1)
+          Workers Planned: 4
+          Workers Launched: 4
+          ->  Partial Aggregate (actual time=216.437..216.439 rows=1 loops=5)
+                ->  Parallel Seq Scan on bookings (actual time=0.027..169.144 rows=422222 loops=5)
+
+SET debug_parallel_query = on;
+EXPLAIN (costs off) SELECT * FROM bookings;
+ Gather
+   Workers Planned: 1
+   Single Copy: true
+   ->  Seq Scan on bookings
+
+>= SET debug_parallel_query = on;
+SET
+
+=> EXPLAIN (costs off)
+SELECT * FROM bookings;
+
+         QUERY PLAN
+-----------------------------
+ Gather
+   Workers Planned: 1
+   Single Copy: true
+   ->  Seq Scan on bookings
+(4 rows)
+
+=> RESET debug_parallel_query;
+
+>= EXPLAIN
+SELECT sum(total_amount)
+FROM bookings WHERE book_ref < '400000';
+
+        QUERY PLAN
+----------------
+        Finalize Aggregate  (cost=16864.79..16864.80 rows=1 width=32)
+          ->  Gather  (cost=16864.57..16864.78 rows=2 width=32)
+                Workers Planned: 2
+                ->  Partial Aggregate  (cost=15864.57..15864.58 rows=1 width=32)
+                      ->  Parallel Index Scan using bookings_pkey on bookings  (cost=0.43..15314.81 rows=219906 width=6)
+                            Index Cond: (book_ref < 400000::bpchar)
+
+SELECT round(
+  (relpages / 4.0) * current_setting('random_page_cost')::real +
+  (reltuples / 4.0) * current_setting('cpu_index_tuple_cost')::real +
+  (reltuples / 4.0) * current_setting('cpu_operator_cost')::real
+ ) AS index_cost
+FROM pg_class WHERE relname = 'bookings_pkey';
+
+index_cost
+----------
+    9750
+(1 row)
+
+SELECT round(
+   (relpages / 4.0) * current_setting('seq_page_cost')::real +
+   (reltuples / 4.0) / 2.4 * current_setting('cpu_tuple_cost')::real
+  ) AS table_cost
+  FROM pg_class WHERE relname = 'bookings';
+
+>= RESET debug_parallel_query;
+RESET
+
+=> EXPLAIN
+SELECT sum(total_amount)
+FROM bookings WHERE book_ref < '400000';
+
+QUERY PLAN
+Finalize Aggregate  (cost=16864.79..16864.80 rows=1 width=32)
+  ->  Gather  (cost=16864.57..16864.78 rows=2 width=32)
+        Workers Planned: 2
+        ->  Partial Aggregate  (cost=15864.57..15864.58 rows=1 width=32)
+              ->  Parallel Index Scan using bookings_pkey on bookings  (cost=0.43..15314.81 rows=219906 width=6)
+                    Index Cond: (book_ref < '400000'::bpchar)
+(6 rows)
+
+SELECT round(
+    (relpages / 4.0) * current_setting('random_page_cost')::real +
+    (reltuples / 4.0) * current_setting('cpu_index_tuple_cost')::real +
+    (reltuples / 4.0) * current_setting('cpu_operator_cost')::real
+  ) AS index_cost
+FROM pg_class WHERE relname = 'bookings_pkey';
+
+SELECT round(
+  (relpages / 4.0) * current_setting('random_page_cost')::real +
+  (reltuples / 4.0) * current_setting('cpu_index_tuple_cost')::real +
+  (reltuples / 4.0) * current_setting('cpu_operator_cost')::real
+ ) AS index_cost
+FROM pg_class WHERE relname = 'bookings_pkey';
+
+index_cost
+----------
+    9750
+(1 row)
+
+SELECT round(
+   (relpages / 4.0) * current_setting('random_page_cost')::real +
+   (reltuples / 4.0) * current_setting('cpu_index_tuple_cost')::real +
+   (reltuples / 4.0) * current_setting('cpu_operator_cost')::real
+  ) AS index_cost
+  FROM pg_class WHERE relname = 'bookings_pkey';
+
+index_cost
+-----------
+ 937.56
+(1 row)
+
+=> SELECT round(
+   (relpages / 4.0) * current_setting('seq_page_cost')::real +
+   (reltuples / 4.0) / 2.4 * current_setting('cpu_tuple_cost')::real
+  ) AS table_cost
+  FROM pg_class WHERE relname = 'bookings';
+
+>= CREATE INDEX ON bookings(total_amount);
+CREATE INDEX
+
+=> \bind '2017-07-15 18:00:00+03'
+
+=> EXPLAIN (costs off)
+   SELECT count(*) FROM bookings
+   WHERE total_amount < 20000 AND book_date > $1;
+```
+
+*Источник: [00:02:44], [00:10:48], [00:12:08], [00:12:28], [00:12:48], [00:16:44] и др.*
+
+> [!quote]- Кадр [00:02:44]
+> ![](frames/kf_0006.png)
+
+> [!quote]- Кадр [00:35:26]
+> ![](frames/kf_0089.png)
+
+> [!quote]- Кадр [00:34:06]
+> ![](frames/kf_0086.png)
+
+> [!quote]- Кадр [00:17:04]
+> ![](frames/kf_0041.png)
 
 
-## 3. Параллельный скан
+## 3. Параллельные методы доступа и их стоимость
 
-Параллельный скан — это последовательное сканирование таблицы, выполняемое параллельно: таблица делится на части, каждый рабочий процесс сканирует свою часть, после чего результаты агрегируются. В узле Parallel Seq Scan строка rows показывает оценку количества строк, которые обработает один рабочий процесс, а не общее количество строк в таблице. Ведущий процесс тоже участвует в параллельной seq scan-операции: при двух рабочих процессах он берёт на себя 0,4 — 40% от доли рабочих процессов, и эта доля уменьшается с увеличением количества рабочих процессов. Ресурсы процессора делятся на 2,4, поскольку рабочие процессы работают одновременно; стоимость ввода-вывода учитывается полностью и не делится на число рабочих процессов, потому что каждую страницу всё равно нужно прочитать.
+Parallel Seq Scan — это последовательное сканирование таблицы, выполняемое параллельно: таблица делится на части, и каждый рабочий процесс сканирует свою часть; он хорошо подходит для агрегаций. Все методы доступа могут работать в параллельном режиме: Parallel Index Scan читает и индекс, и таблицу, Parallel Index Only Scan — только индекс; спуск к листовой странице индекса выполняет ведущий процесс, а листовые страницы делятся между рабочими. При Parallel Index Only Scan каждый рабочий процесс проверяет карту видимости. Битовая карта строится только ведущим процессом; после этого Bitmap Heap Scan может выполняться параллельно как Parallel Bitmap Heap Scan, и каждый процесс идёт по битовой карте и перепроверяет условия. Стоимость Parallel Seq Scan вычисляется как relpages * seq_page_cost + reltuples * cpu_tuple_cost / 2.4; стоимость индексного доступа оценивается делением страниц и строк на 4: (relpages/4)*random_page_cost + (reltuples/4)*cpu_index_tuple_cost + (reltuples/4)*cpu_operator_cost. Стоимость запуска параллельных процессов определяется параметром parallel_setup_cost, а parallel_tuple_cost минимален и им можно пренебречь; компонента ввода-вывода учитывается полностью, а ресурсы процессора делятся на 2.4, так как они работают одновременно.
 
-*Источник: [00:01:00]*
+```sql
+>= EXPLAIN
+SELECT sum(total_amount)
+FROM bookings WHERE book_ref < '400000';
+
+        QUERY PLAN
+----------------
+        Finalize Aggregate  (cost=16864.79..16864.80 rows=1 width=32)
+          ->  Gather  (cost=16864.57..16864.78 rows=2 width=32)
+                Workers Planned: 2
+                ->  Partial Aggregate  (cost=15864.57..15864.58 rows=1 width=32)
+                      ->  Parallel Index Scan using bookings_pkey on bookings  (cost=0.43..15314.81 rows=219906 width=6)
+                            Index Cond: (book_ref < 400000::bpchar)
+
+SELECT round(
+  (relpages / 4.0) * current_setting('random_page_cost')::real +
+  (reltuples / 4.0) * current_setting('cpu_index_tuple_cost')::real +
+  (reltuples / 4.0) * current_setting('cpu_operator_cost')::real
+ ) AS index_cost
+FROM pg_class WHERE relname = 'bookings_pkey';
+
+index_cost
+----------
+    9750
+(1 row)
+
+SELECT round(
+   (relpages / 4.0) * current_setting('seq_page_cost')::real +
+   (reltuples / 4.0) / 2.4 * current_setting('cpu_tuple_cost')::real
+  ) AS table_cost
+  FROM pg_class WHERE relname = 'bookings';
+
+SELECT round(
+   (relpages / 4.0) * current_setting('random_page_cost')::real +
+   (reltuples / 4.0) * current_setting('cpu_index_tuple_cost')::real +
+   (reltuples / 4.0) * current_setting('cpu_operator_cost')::real
+  ) AS index_cost
+  FROM pg_class WHERE relname = 'bookings_pkey';
+
+index_cost
+-----------
+ 937.56
+(1 row)
+
+>= CREATE INDEX ON bookings(total_amount);
+CREATE INDEX
+
+=> \bind '2017-07-15 18:00:00+03'
+
+=> EXPLAIN (costs off)
+   SELECT count(*) FROM bookings
+   WHERE total_amount < 20000 AND book_date > $1;
+
+>= SELECT reltuples, current_setting('cpu_operator_cost'),
+       reltuples * current_setting('cpu_operator_cost')::real AS total
+FROM pg_class WHERE relname = 'seats';
+
+ reltuples | current_setting | total
+-----------+-----------------+--------
+      1339 | 0.0025          | 3.3474998
+
+=> SELECT round(
+       ( relpages * current_setting('seq_page_cost')::real +
+         reltuples * current_setting('cpu_tuple_cost')::real / 2.4
+       )::numeric,
+       2
+  ) AS "cost"
+FROM pg_class WHERE relname = 'bookings';
+ cost
+------
+22243.29
+(1 row)
+
+=> SELECT current_setting('parallel_setup_cost') parallel_setup_cost,
+  current_setting('parallel_tuple_cost') parallel_tuple_cost;
+ parallel_setup_cost | parallel_tuple_cost
+---------------------+--------------------
+          1000       | 0.1
+(1 row)
+```
+
+| Термин | Что читает |
+| Parallel Index Scan | индекс и таблицу |
+| Parallel Index Only Scan | только индекс |
+
+| Признак | Parallel Seq Scan | Parallel Index Scan |
+|---|---|---|
+| Что используется | последовательное сканирование таблицы | индекс по определённому условию |
+| Кто выполняет | несколько процессов | несколько процессов |
+
+*Источник: [00:05:09], [00:08:42], [00:10:48], [00:13:08], [00:13:34], [00:13:54] и др.*
+
+> [!quote]- Кадр [00:05:09]
+> ![](frames/kf_0011.png)
 
 
-## 4. Стоимость и пороги параллельного плана
-
-Для агрегации нужно обработать определённое количество строк: количество строк, обработанных рабочим процессом, умножается на значение параметра CPU оператора COST. Затраты на запуск рабочих процессов оценивает стоимость настройки параллельного выполнения (Parallel Setup Cost) — стоимость запуска любого количества параллельных процессов. Общая стоимость складывается из стоимости доступа к индексу и стоимости доступа к таблице; стоимость индексного доступа между процессами не делится, потому что все процессы должны прочитать индексные страницы, а количество страниц и строк делят на 4, если запрос выбирает четвёртую часть; последовательное сканирование и индексный доступ могут выполняться параллельно, и ресурсы процессора используются сразу в нескольких рабочих процессах одновременно, что может сэкономить время. Параллельный план не строится для таблиц, размер которых не превышает min_parallel_table_scan_size, по умолчанию порог равен 8 мегабайтам: на 8 МБ запускается один процесс, на 24 МБ появляется второй. Параллельный индексный доступ не используется, если размер выборки, которую нужно получить в результате запроса, не превышает min_parallel_index_scan_size, по умолчанию — 512 кБ.
-
-*Источник: [00:01:00]*
+> [!quote]- Кадр [00:27:06]
+> ![](frames/kf_0067.png)
 
 
-## 5. Последовательный план и отключение параллелизма
+> [!quote]- Кадр [00:26:46]
+> ![](frames/kf_0066.png)
 
-Последовательный план используется как запасной вариант (fallback): он подключается, если нет другой работы. Если планировщик показывает последовательный план, это не означает, что запрос не может исполняться параллельно: это говорит о том, что последовательный план дешевле по стоимости, чем параллельный. Чтобы посмотреть на план без параллельного выполнения, можно установить параметр MaxParallelWorkersPerGather в 0, тогда план точно будет последовательным.
+> [!quote]- Кадр [00:32:35]
+> ![](frames/kf_0082.png)
 
-*Источник: [00:01:00]*
+## 4. Последовательный план и нераспараллеливаемые операции
+
+Если стоимость последовательного сканирования ниже, чем параллельного, планировщик выбирает последовательный план; для маленьких таблиц параллельный план считается невыгодным. Агрегатный узел плана не начнёт возвращать строки, пока предыдущий узел Seq Scan не выполнится полностью. Запросы на запись никогда не распараллеливаются, как и запросы на чтение с блокировкой строк; курсоры, в том числе в цикле FOR в PL/pgSQL, не распараллеливаются. Запросы с функциями PARALLEL UNSAFE не распараллеливаются; вложенные запросы внутри функций выполняются последовательно, параллельно может выполняться только запрос верхнего уровня. Обращения к временным таблицам всегда последовательны; при объединении с временной таблицей доступ к основной таблице может быть параллельным, а к временной — последовательным. Также не распараллеливаются чтение CTE, нераскрываемых подзапросов, вызовы функций PARALLEL RESTRICTED и функции с вложенными транзакциями.
+
+```sql
+>= EXPLAIN
+SELECT count(*) FROM seats;
+
+QUERY PLAN
+Aggregate  (cost=24.74..24.75 rows=1 width=8)
+  ->  Seq Scan on seats  (cost=0.00..21.39 rows=1339 width=0)
+(2 rows)
+
+CREATE TEMP TABLE tmp_bookings AS
+   SELECT * FROM bookings;
+
+=> EXPLAIN
+SELECT count(*) FROM seats;
+
+QUERY PLAN
+Aggregate  (cost=24.74..24.75 rows=1 width=8)
+  ->  Seq Scan on seats  (cost=0.00..21.39 rows=1339 width=0)
+(2 rows)
+```
+
+> [!info] Зачем это нужно
+> Чтобы избежать каскадного распараллеливания.
+
+*Источник: [00:00:47], [00:07:32], [00:07:52], [00:21:17], [00:21:37], [00:22:33] и др.*
 
 
-## 6. Что не распараллеливается
+> [!quote]- Кадр [00:21:37]
+> ![](frames/kf_0053.png)
 
-Не распараллеливаются запросы на запись, запросы с блокировкой строк, операции с курсорами (включая курсоры в цикле for) и запросы, вызывающие функции, помеченные как небезопасные для параллельного выполнения (parallel unsafe). Некоторые узлы плана могут выполняться параллельно, но некоторые части плана никогда не распараллеливаются и выполняются только последовательно, например чтение результатов общих табличных выражений и нераскрываемые подзапросы; это не мешает параллельному выполнению других частей. Обращения к временным таблицам не распараллеливаются. Если объединить результаты с временной таблицей, доступ к основной таблице выполняется параллельно, а доступ к временной таблице — последовательно.
-
-*Источник: [00:01:00]*
-
-
-## 7. Параллельное индексное сканирование и Bitmap Heap Scan
-
-Индекс может сканироваться параллельно, включая index scan и сканирование по битовой карте. Для параллельного индексного сканирования сначала выполняется последовательная часть — спуск от корня к листовой странице; листовые страницы индекса делятся между несколькими рабочими процессами, каждый рабочий процесс читает свои листовые страницы, а запускает их ведущий процесс. Рабочий процесс смотрит в карту видимости, затем ходит в таблицу и читает соответствующие табличные строки, получая результат. Битовая карта всегда строится одним процессом, последовательно; в плане это ведущий процесс. После построения битовой карты операция Bitmap Heap Scan может выполняться параллельно и отображается в узле Parallel Bitmap Heap Scan; для таблицы Bookings операция выполняется с перепроверкой условий и дополнительным фильтром, причём построение битовой карты происходит до её выполнения.
-
-*Источник: [00:01:00]*
-
-
-## 8. Отладка debug-parallel-query
-
-Параметр debug-parallel-query (Debug Parallel Query) используется только для отладки. При его включении планировщик использует параллельные планы, даже если считает их невыгодными по стоимости. Он позволяет узнать, как мог бы выглядеть параллельный план. Параметр всегда планирует только один рабочий процесс, что можно использовать при поиске оптимального плана.
-
-*Источник: [00:01:00]*
-
+> [!quote]- Кадр [00:22:33]
+> ![](frames/kf_0055.png)
 
 ## Схема
 
 ```mermaid
 flowchart TD
-    n1["1. Ведущий, рабочие процессы и параметры"]
-    n2["2. Узел Gather и Finalize Aggregate"]
-    n4["4. Стоимость и пороги параллельного плана"]
-    n7["7. Параллельное индексное сканирование и Bitmap …"]
-    n8["8. Отладка debug-parallel-query"]
-    n1 -->|следствие: рабочие передают частичные результаты…| n2
-    n4 -->|причина: ниже порога min_parallel_table_scan_siz…| n1
-    n7 -->|следствие: стоимость индексного сканирования скл…| n4
-    n8 -->|сравни с: debug-parallel-query всегда планирует …| n1
+    n1["1. Структура параллельного плана и агрегации"]
+    n2["2. Пул рабочих процессов, лимиты и формула"]
+    n3["3. Параллельные методы доступа и их стоимость"]
+    n4["4. Последовательный план и нераспараллеливаемые операции"]
+    n1 --> n2
+    n2 --> n3
+    n3 --> n4
 ```
 
 ## Итог
 
 > [!success] Что в итоге
-> Параллельный план строится вокруг ведущего процесса и рабочих, которые делят таблицу или листовые страницы индекса и передают частичные результаты в узел Gather, где Finalize Aggregate складывает их. Число рабочих процессов ограничено параметрами (MaxWorkerProcesses, MaxParallelWorkers) и может фиксироваться для конкретной таблицы через Parallel Workers, а само построение плана зависит от порогов min_parallel_table_scan_size и min_parallel_index_scan_size и стоимости запуска процессов. Часть запросов и объектов, включая временные таблицы и запросы на запись, не распараллеливается. Последовательный план в выводе планировщика означает лишь меньшую стоимость, а для отладки применяется debug-parallel-query.
+> Параллельный план состоит из последовательной части, выполняемой ведущим процессом, и параллельной части ниже узла Gather, выполняемой рабочими процессами, число которых ограничено max_worker_processes и определяется формулой от размера таблицы. Стоимость Parallel Seq Scan вычисляется по relpages и reltuples с делением процессорной части на 2.4, отдельно учитывается стоимость запуска процессов (parallel_setup_cost); стоимость индексного доступа оценивается делением страниц и строк на 4. Когда параллельный план невыгоден — например, на маленькой таблице — планировщик выбирает последовательный план. Часть запросов и операций не распараллеливается: запись, чтение с блокировкой строк, курсоры, функции PARALLEL UNSAFE, вложенные запросы, CTE, временные таблицы и функции PARALLEL RESTRICTED.
 
